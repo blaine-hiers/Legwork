@@ -1,0 +1,77 @@
+{
+  "key": "machine-shop-job",
+  "order": 50,
+  "title": "A job through the shop",
+  "industry": "Machining and fabrication",
+  "blurb": "Print arrives, job runs, job ships. Where the time actually goes.",
+  "asks": "A print lands on your desk. Walk me through to the day it ships.",
+  "sample": "From: Karen Ipswich <kipswich@ipswichcutting.example>\n\nAttaching the print for job WO-2214. Qty 40 pcs, material is on our PO 7719. Need first article by 10/3 and the balance by 10/17. Ship to 3300 Appling Road. Give me a call at 901-555-0104 when you've had a look.\n\nThanks,\nKaren\n",
+  "steps": [
+    {
+      "name": "Read the print and work out what it takes",
+      "who": "Estimator or owner",
+      "system": "Print, head",
+      "minutes": 22,
+      "handling": [
+        "decided",
+        "looked-up"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Quote it",
+      "who": "Estimator",
+      "system": "Spreadsheet",
+      "minutes": 18,
+      "handling": [
+        "retyped",
+        "written"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Turn the accepted quote into a traveller",
+      "who": "Office",
+      "system": "Shop software, paper",
+      "minutes": 14,
+      "handling": [
+        "retyped",
+        "paper"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Schedule it against the machines",
+      "who": "Shop lead",
+      "system": "Whiteboard",
+      "minutes": 15,
+      "handling": [
+        "scheduled",
+        "decided"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Record what actually ran",
+      "who": "Operators",
+      "system": "Paper traveller",
+      "minutes": 10,
+      "handling": [
+        "paper",
+        "checked"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Type the traveller in and invoice",
+      "who": "Office",
+      "system": "Accounting",
+      "minutes": 12,
+      "handling": [
+        "retyped",
+        "written"
+      ],
+      "note": ""
+    }
+  ]
+}

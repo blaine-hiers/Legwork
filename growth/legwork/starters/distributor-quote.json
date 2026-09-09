@@ -1,0 +1,85 @@
+{
+  "key": "distributor-quote",
+  "order": 20,
+  "title": "A quote request comes in",
+  "industry": "Distribution and supply",
+  "blurb": "Somebody emails asking for a price on things you don't stock. What happens next.",
+  "asks": "Somebody emails you asking for a price. Talk me through what happens after that.",
+  "sample": "From: purchasing@harrellmachine.example\nSubject: RFQ - PO 4471\n\nPlease quote the following:\n\n  Qty 24 ea  part # CB-1140-R\n  Qty 6 each  model SLT/220\n\nNeed delivered by September 12. Ship to 4402 Industrial Blvd, Bldg C.\nCall me at (901) 555-0188 with any questions. Budget is around $8,400.\n\nRegards,\nMarcus Feld\n",
+  "steps": [
+    {
+      "name": "Read the request and work out what they mean",
+      "who": "Inside sales",
+      "system": "Email",
+      "minutes": 9,
+      "handling": [
+        "decided",
+        "looked-up"
+      ],
+      "note": "Half of them don't use your part numbers."
+    },
+    {
+      "name": "Type the lines into the quote",
+      "who": "Inside sales",
+      "system": "Quoting software",
+      "minutes": 14,
+      "handling": [
+        "retyped"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Check what it costs us now",
+      "who": "Inside sales",
+      "system": "Supplier portals, price sheets",
+      "minutes": 16,
+      "handling": [
+        "looked-up",
+        "retyped"
+      ],
+      "note": "This is the one that goes to three different places."
+    },
+    {
+      "name": "Email suppliers for anything odd",
+      "who": "Inside sales",
+      "system": "Email",
+      "minutes": 8,
+      "handling": [
+        "written",
+        "chased"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Somebody prices it",
+      "who": "Owner or sales manager",
+      "system": "Head",
+      "minutes": 7,
+      "handling": [
+        "decided"
+      ],
+      "note": "Margin call. Depends on the customer and how busy we are."
+    },
+    {
+      "name": "Write and send the quote",
+      "who": "Inside sales",
+      "system": "Quoting software",
+      "minutes": 10,
+      "handling": [
+        "written",
+        "checked"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Follow up on quotes nobody answered",
+      "who": "Inside sales",
+      "system": "Email",
+      "minutes": 6,
+      "handling": [
+        "chased"
+      ],
+      "note": ""
+    }
+  ]
+}

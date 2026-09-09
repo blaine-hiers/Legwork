@@ -1,0 +1,86 @@
+{
+  "key": "hvac-service-call",
+  "order": 10,
+  "title": "A service call, start to finish",
+  "industry": "Heating and air",
+  "blurb": "The phone rings and something is broken. Everything between that and getting paid.",
+  "asks": "Walk me through what happens from the phone ringing to the invoice going out.",
+  "sample": "From: Dana Whitfield <dwhitfield@northsidedental.example>\n\nHi — this is Dana at Northside Dental. Our upstairs unit is blowing warm air again, same as March. Model RTU-4400-B. We have patients Monday so we need somebody out Friday if you can. 229-555-0142. We're at 1180 Millbrook Road, Suite 4. PO 88213 if you need one.\n\nThanks,\nDana\n",
+  "steps": [
+    {
+      "name": "Take the call and write it down",
+      "who": "Whoever picks up",
+      "system": "Notepad, then the software",
+      "minutes": 6,
+      "handling": [
+        "retyped",
+        "paper"
+      ],
+      "note": "Usually written on a pad first because the caller is still talking."
+    },
+    {
+      "name": "Find out if we've been there before",
+      "who": "Office",
+      "system": "Old job files",
+      "minutes": 8,
+      "handling": [
+        "looked-up"
+      ],
+      "note": "Last visit, what was fixed, what it cost."
+    },
+    {
+      "name": "Get it on the board",
+      "who": "Dispatcher",
+      "system": "Whiteboard or schedule",
+      "minutes": 10,
+      "handling": [
+        "scheduled",
+        "decided"
+      ],
+      "note": "Who is closest, who has the part, who the customer likes."
+    },
+    {
+      "name": "Tech writes up what they did",
+      "who": "Tech",
+      "system": "Paper ticket",
+      "minutes": 12,
+      "handling": [
+        "paper",
+        "written"
+      ],
+      "note": "In the truck, at the end of the call."
+    },
+    {
+      "name": "Type the ticket into the system",
+      "who": "Office",
+      "system": "The software",
+      "minutes": 9,
+      "handling": [
+        "retyped",
+        "checked"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Build and send the invoice",
+      "who": "Office",
+      "system": "Accounting",
+      "minutes": 11,
+      "handling": [
+        "written",
+        "looked-up"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Chase the ones that don't pay",
+      "who": "Office",
+      "system": "Email and phone",
+      "minutes": 7,
+      "handling": [
+        "chased"
+      ],
+      "note": ""
+    }
+  ]
+}

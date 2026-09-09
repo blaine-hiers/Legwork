@@ -1,0 +1,64 @@
+{
+  "key": "field-paperwork",
+  "order": 30,
+  "title": "Getting the paperwork off the truck",
+  "industry": "Any crew that leaves the building",
+  "blurb": "What the crew writes down, and everything that happens to it afterwards.",
+  "asks": "What does the crew write down out there, and how does it get back to you?",
+  "sample": "Text from Marco, 4:52pm:\n\ndone at 720 Fourth St. replaced the contactor, part CB-330. 2.5 hrs. customer signed. they asked about the second unit, said call em monday 912-555-0117. also need 3 ea of the same contactor on the truck\n",
+  "steps": [
+    {
+      "name": "Crew writes it down",
+      "who": "Crew",
+      "system": "Paper, phone photos, texts",
+      "minutes": 10,
+      "handling": [
+        "paper"
+      ],
+      "note": ""
+    },
+    {
+      "name": "It gets back to the office",
+      "who": "Crew",
+      "system": "Truck, envelope, group text",
+      "minutes": 6,
+      "handling": [
+        "chased"
+      ],
+      "note": "Sometimes Friday. Sometimes not at all."
+    },
+    {
+      "name": "Somebody types it up",
+      "who": "Office",
+      "system": "The software",
+      "minutes": 13,
+      "handling": [
+        "retyped",
+        "checked"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Work out what parts got used",
+      "who": "Office",
+      "system": "Inventory, memory",
+      "minutes": 11,
+      "handling": [
+        "looked-up",
+        "decided"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Anything the crew flagged gets followed up",
+      "who": "Office",
+      "system": "Notes",
+      "minutes": 8,
+      "handling": [
+        "looked-up",
+        "written"
+      ],
+      "note": "The 'they asked about the second unit' line — that's revenue, and it's the bit that gets lost."
+    }
+  ]
+}

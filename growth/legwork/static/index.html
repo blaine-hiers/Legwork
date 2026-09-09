@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Generator</title>
+<link rel="stylesheet" href="/_shared/base.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span> Demo Generator</div>
+    <span class="sub" id="subtitle">What could come off their plate</span>
+    <div class="spacer"></div>
+    <span class="saving" id="saveStatus"></span>
+    <button id="btnDemo" class="btn" title="The live demo (Ctrl+D)">Live demo</button>
+    <button id="btnSheet" class="btn primary" title="One-pager (Ctrl+P)">One-pager</button>
+    <span id="themeSlot"></span>
+  </header>
+
+  <div class="body">
+
+    <aside class="sidebar" id="sidebar">
+      <div class="pad">
+        <button id="btnNew" class="btn primary block">Start a sheet</button>
+      </div>
+      <div class="scroll">
+        <div class="list" id="sheetList"></div>
+        <div class="pad muted small" id="sheetsEmpty">
+          Nothing yet. Start a sheet from the trade they're in, then change every
+          number as they talk.
+        </div>
+      </div>
+      <div class="pad sidefoot">
+        <button id="btnImport" class="btn sm block">Bring in a workflow map</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="tabs no-print">
+        <button class="tab active" data-view="work">The work</button>
+        <button class="tab" data-view="demo">Live demo</button>
+        <button class="tab" data-view="sheet">One-pager</button>
+      </div>
+
+      <div class="scroll" id="pane">
+
+        <!-- ---------------------------------------------------- the work -->
+        <section id="viewWork" class="view">
+
+          <div id="noSheet" class="empty">
+            <div class="big">▤</div>
+            <h2>Nothing open</h2>
+            <p>Pick a trade on the left and you get a workflow they recognise in
+               ten seconds. Then change every number as they talk — the starters
+               are guesses and the sheet says so until you overwrite them.</p>
+          </div>
+
+          <div id="sheetBody" class="hidden">
+
+            <div class="card">
+              <div class="row">
+                <div class="field">
+                  <label for="fClient">Whose company</label>
+                  <input type="text" id="fClient" placeholder="Their company name">
+                </div>
+                <div class="field">
+                  <label for="fIndustry">Trade</label>
+                  <input type="text" id="fIndustry" placeholder="What they'd call it">
+                </div>
+              </div>
+              <div class="field">
+                <label for="fName">What this workflow is</label>
+                <input type="text" id="fName" placeholder="A service call, start to finish">
+              </div>
+              <div class="field">
+                <label for="fRate">What an hour of this costs them <span class="muted">— optional</span></label>
+                <input type="number" id="fRate" min="0" step="1" inputmode="decimal" placeholder="Leave empty">
+                <div class="hint">Leave it empty and the sheet stays in hours. A dollar
+                  figure built on a rate nobody said is a guess with a dollar sign on it.</div>
+              </div>
+              <div id="askLine" class="ask hidden"></div>
+            </div>
+
+            <div class="section-head">
+              <h1>The steps</h1>
+              <span class="muted small" id="stepCount"></span>
+            </div>
+
+            <div id="steps"></div>
+            <button id="btnAddStep" class="btn block mt">Add a step</button>
+          </div>
+        </section>
+
+        <!-- --------------------------------------------------- live demo -->
+        <section id="viewDemo" class="view hidden">
+          <div class="card">
+            <h1>Paste the actual mess</h1>
+            <p class="muted small">
+              This runs for real on whatever goes in the box — their own email works,
+              and that is the point. It reads the text with pattern matching in the
+              standard library. No model, no cloud, no network: nothing typed here
+              leaves this machine.
+            </p>
+            <div class="field">
+              <label for="demoPick">What to show them</label>
+              <select id="demoPick"></select>
+              <div class="hint" id="demoBlurb"></div>
+            </div>
+            <div class="field" id="docPickWrap">
+              <label for="docPick">Which document</label>
+              <select id="docPick"></select>
+            </div>
+            <div class="field" id="pasteWrap">
+              <label for="demoText">The email, the voicemail, the text from site</label>
+              <textarea id="demoText" rows="9" placeholder="Paste it here."></textarea>
+            </div>
+            <div class="field hidden" id="chaseWrap">
+              <label for="chaseText">One a line: who, what, and the date it was due</label>
+              <textarea id="chaseText" rows="7"
+                placeholder="Marcus Feld, quote 4471, 2026-07-20"></textarea>
+              <div class="hint">Dates look like 2026-07-20. Anything it can't read is listed, not skipped.</div>
+            </div>
+            <div class="flex">
+              <button id="btnRunDemo" class="btn primary">Run it</button>
+              <button id="btnSample" class="btn">Use the sample</button>
+              <span class="muted small" id="demoHow"></span>
+            </div>
+          </div>
+          <div id="demoOut"></div>
+        </section>
+
+        <!-- --------------------------------------------------- one-pager -->
+        <section id="viewSheet" class="view hidden">
+          <div class="flex no-print mb">
+            <button id="btnCopy" class="btn">Copy it</button>
+            <button id="btnDownload" class="btn">Download</button>
+            <button id="btnPrint" class="btn">Print</button>
+            <span class="muted small">This is what they keep.</span>
+          </div>
+          <pre id="sheetOut" class="onepager"></pre>
+        </section>
+
+      </div>
+    </main>
+
+    <aside class="inspector" id="inspector">
+      <div class="ins-pad">
+        <h3>What it adds up to</h3>
+        <div id="totals"></div>
+        <div class="sep"></div>
+        <h3>Start here</h3>
+        <div id="firstOut" class="muted small">Nothing ticked yet.</div>
+        <div class="sep"></div>
+        <h3>What this doesn't cover</h3>
+        <div id="warnings" class="muted small"></div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script src="/_shared/ui.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "key": "scheduling",
+  "order": 40,
+  "title": "Building tomorrow",
+  "industry": "Anyone with a board",
+  "blurb": "How the day gets built, and what happens when it falls apart by nine.",
+  "asks": "How does tomorrow's board get built, and who builds it?",
+  "sample": "Voicemail, 7:14am:\n\nHey it's Tom — Jarrod called out sick this morning, so we're a man down. The Millbrook Road job has to happen today, they're already rescheduled once. Can somebody call the Fourth Street customer and push them to Thursday? Number's 229-555-0163. Thanks.\n",
+  "steps": [
+    {
+      "name": "Build the board",
+      "who": "Dispatcher or owner",
+      "system": "Whiteboard, spreadsheet",
+      "minutes": 25,
+      "handling": [
+        "scheduled",
+        "decided",
+        "looked-up"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Tell everybody what they're doing",
+      "who": "Dispatcher",
+      "system": "Phone, text",
+      "minutes": 12,
+      "handling": [
+        "written",
+        "chased"
+      ],
+      "note": ""
+    },
+    {
+      "name": "Rebuild it when somebody calls out",
+      "who": "Dispatcher",
+      "system": "Same board",
+      "minutes": 18,
+      "handling": [
+        "scheduled",
+        "decided",
+        "chased"
+      ],
+      "note": "This is the one that eats the morning."
+    },
+    {
+      "name": "Ring the customers you had to move",
+      "who": "Office",
+      "system": "Phone",
+      "minutes": 9,
+      "handling": [
+        "written",
+        "chased"
+      ],
+      "note": ""
+    }
+  ]
+}
