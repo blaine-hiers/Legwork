@@ -48,7 +48,7 @@ flowchart TD
     G --> H{{"Walk each field's patterns:<br/>name, company, phone, email,<br/>address, when, reference,<br/>part, quantity, money"}}
     H --> I["found: value + found_by"]
     H --> J["missed: label + why"]
-    I --> K["Result shown back to the owner<br/>(found next to missed, side by side)"]
+    I --> K["Result shown back to the owner:<br/>what it found, then what it missed"]
     J --> K
 
     classDef stage fill:#e8f0fe,stroke:#4c6ef5,color:#1a1a2e;
