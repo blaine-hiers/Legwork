@@ -191,7 +191,7 @@ def _percent_span(low_frac, high_frac):
     return int(math.floor(low_frac * 100)), int(math.ceil(high_frac * 100))
 
 
-def _range_or_minutes(low_min, high_min):
+def _finest_range(low_min, high_min):
     """A positive, genuinely distinct low/high (in minutes) rendered at the
     coarsest unit that still keeps the two ends apart.
 
@@ -200,23 +200,65 @@ def _range_or_minutes(low_min, high_min):
     time on it to survive that rounding. A step worth two minutes a month
     does not: both ends round to 0.0 and a real range prints as the single
     figure `05` §8 forbids, even though the fractions behind it were never
-    equal. Hours first, since that is the unit an owner actually thinks in.
-    Minutes -- sixty times the resolution, for the same two numbers -- only
-    when hours can't hold the two ends apart. If minutes can't either, this
-    has stopped being a rendering choice, and the guard below says so
-    instead of printing a lie.
+    equal.
+
+    Hours first, since that is the unit an owner actually thinks in. Then
+    minutes -- sixty times the resolution, for the same two numbers. Then
+    seconds, twice over: whole seconds, then a tenth of one. That covers
+    every quantity an owner can actually type into this app's own minutes
+    field (half a minute, run every other month, is a real answer -- see
+    the review that added this tier) with room to spare. The raise below
+    is a model-broke assertion, not a rendering choice: it must never be
+    reachable from an ordinary form, only from a fraction pair that is
+    equal, or close enough to it, that no unit tells them apart -- exactly
+    what a mangled `_compose` or a hand-edited pattern would produce, and
+    exactly what `test_the_display_guard_fires...` forces to prove it.
     """
     low_hrs, high_hrs = _hours(low_min), _hours(high_min)
     if high_hrs > low_hrs:
         return "%s–%s hrs" % (low_hrs, high_hrs)
-    low_round, high_round = _round(low_min, 1), _round(high_min, 1)
-    if high_round > low_round:
-        return "%s–%s min" % (low_round, high_round)
+    low_m, high_m = _round(low_min, 1), _round(high_min, 1)
+    if high_m > low_m:
+        return "%s–%s min" % (low_m, high_m)
+    low_s, high_s = _round(low_min * 60, 0), _round(high_min * 60, 0)
+    if high_s > low_s:
+        return "%s–%s sec" % (low_s, high_s)
+    low_s1, high_s1 = _round(low_min * 60, 1), _round(high_min * 60, 1)
+    if high_s1 > low_s1:
+        return "%s–%s sec" % (low_s1, high_s1)
     raise patterns.SavingsError(
-        "a real, non-zero range (%.4f-%.4f minutes) still reads as a single "
-        "figure at minute precision. A saving on a client's page is a range "
-        "or it is nothing." % (low_min, high_min)
+        "a real, non-zero range (%.6f-%.6f minutes) still reads as a single "
+        "figure at a tenth of a second. A saving on a client's page is a "
+        "range or it is nothing." % (low_min, high_min)
     )
+
+
+def _finest_hours(low_min, high_min):
+    """`low_min`/`high_min` as hours, at the fewest decimal places that
+    still keep them apart -- the numeric twin of `_finest_range`.
+
+    A review of the first fix found `analyze()`'s totals summing each
+    step's already-rounded `saved_low`/`saved_high` and rounding the sum
+    again -- double rounding, on top of the single rounding `_hours()`
+    already forces. Summing the raw claim once and rounding it once (below,
+    in `analyze()`) closes that; this closes the rest, because a total can
+    still be genuinely small enough that a tenth of an hour can't hold two
+    real, distinct numbers apart, the same way a single tiny step can't.
+    These two are read by API clients as hours, and fed into a money
+    calculation elsewhere, so unlike `_finest_range` they stay in one unit
+    -- more decimal places, never a different one. When there is truly
+    nothing to claim (`low_min == high_min == 0`, the "nothing ticked" and
+    "no volume yet" states in `analyze()`) this just returns two equal
+    zeros, which is the honest answer there; whenever the two inputs are
+    genuinely distinct, some decimal count that shows it is guaranteed to
+    exist, and the cap below is only so a search for it can't run forever.
+    """
+    low_hrs, high_hrs = low_min / 60.0, high_min / 60.0
+    for places in (1, 2, 3, 4, 5, 6):
+        lo, hi = _round(low_hrs, places), _round(high_hrs, places)
+        if hi > lo:
+            return lo, hi
+    return _round(low_hrs, 6), _round(high_hrs, 6)
 
 
 def _step_analysis(step, hourly_cost):
@@ -292,7 +334,7 @@ def _step_analysis(step, hourly_cost):
         # A real, non-zero claim. Extend the same range invariant to what a
         # client actually sees: render at whatever precision keeps the two
         # ends apart, or refuse to print a single figure at all.
-        addressable = _range_or_minutes(claim_low_min, claim_high_min)
+        addressable = _finest_range(claim_low_min, claim_high_min)
     else:
         addressable = "not claimed"
 
@@ -371,40 +413,53 @@ def analyze(doc):
     rows = [_step_analysis(s, rate) for s in m["steps"]]
 
     total_hours = sum(r["hours_month"] for r in rows)
-    low = _round(sum(r["saved_low"] for r in rows), 1)
-    high = _round(sum(r["saved_high"] for r in rows), 1)
 
     scored = [r for r in rows if r["patterns"]]
     scored.sort(key=lambda r: (-r["priority"], -r["saved_high"], r["name"]))
     first = scored[0] if scored else None
 
     # Same fix as each step's own figures, aggregated: add the raw, unrounded
-    # claim every ticked step is making, not the hours each one already
-    # rounded once. Summing post-rounding is exactly how a starter -- seven
-    # steps, all zero volume, all genuinely different fractions -- still adds
-    # up to a headline of "0-0 hrs". `claim_high_total <= 0` carries the same
-    # meaning it does per-step: nobody has said how often *any* ticked step
-    # happens yet, which is a missing answer, not a number to print.
+    # claim every ticked step is making, and round the *sum* once, rather
+    # than summing hours each step already rounded and rounding the sum
+    # again. That double rounding is its own way to reintroduce issue #1 --
+    # a review of the first fix found real, distinct per-step fractions
+    # whose already-rounded hours still summed and re-rounded to the same
+    # figure twice over -- so `saved_low`/`saved_high` below come from these
+    # totals directly, the same single-rounding rule every step's own
+    # figure already follows.
     claim_low_total = sum(r["claim_low_min"] for r in scored)
     claim_high_total = sum(r["claim_high_min"] for r in scored)
     minutes_total = sum(s["minutes"] * s["runs_per_month"] for s in m["steps"])
+    # `_finest_hours` rather than a flat `_hours()`: a total can be genuinely
+    # small enough that a tenth of an hour can't hold two real numbers apart
+    # (the same reason a single tiny step needed `_finest_range`), and it
+    # degrades to two equal zeros without complaint when there is truly
+    # nothing to claim -- the "nothing ticked" / "pending" states below.
+    low, high = _finest_hours(claim_low_total, claim_high_total)
 
+    # Three states, not two. `scored` empty means nothing on the sheet has
+    # been ticked at all -- the same honest "nothing is claimed" state
+    # `_step_analysis` already prints per step -- and that is a different
+    # thing from "ticked, but no step has a volume yet" below. A review of
+    # the first fix found the two folded into one `else` that still called
+    # `_range(low, high)` on an all-zero total, which is exactly the "0-0
+    # hrs / 0% to 0%" this issue exists to remove; the fix is to name the
+    # unclaimed state instead of falling through to it.
+    nothing_ticked = not scored
     totals_pending = bool(scored) and claim_high_total <= 0
-    if totals_pending:
+
+    if nothing_ticked:
+        addressable = "not claimed — nothing on this sheet has been ticked yet"
+        t_share_low = t_share_high = 0
+    elif totals_pending:
         addressable = "not sized yet — none of the ticked steps have a volume given"
         t_share_low = t_share_high = 0
-    elif scored:
-        addressable = _range_or_minutes(claim_low_total, claim_high_total)
+    else:
+        addressable = _finest_range(claim_low_total, claim_high_total)
         t_share_low, t_share_high = (
             int(math.floor(claim_low_total / minutes_total * 100)),
             int(math.ceil(claim_high_total / minutes_total * 100)),
         )
-    else:
-        # Nothing ticked anywhere -- the honest "nothing is claimed" state
-        # `_step_analysis` already prints per step, carried up unchanged.
-        addressable = _range(low, high)
-        t_share_low = int(round((low / total_hours) * 100)) if total_hours else 0
-        t_share_high = int(round((high / total_hours) * 100)) if total_hours else 0
 
     warnings = []
     if not m["steps"]:
@@ -444,8 +499,13 @@ def analyze(doc):
             "saved_low": low,
             "saved_high": high,
             "pending": totals_pending,
+            "nothing_ticked": nothing_ticked,
             "addressable": addressable,
             "how": (
+                "Every step's hand-time added up is %s hrs a month. Nothing on "
+                "the sheet has been ticked yet, so nothing is claimed against it."
+                % _round(total_hours, 1)
+            ) if nothing_ticked else (
                 "Every step's hand-time added up is %s hrs a month. None of the "
                 "ticked steps have a volume yet, so none of it has a size -- "
                 "that is a missing answer, not a zero."
@@ -487,10 +547,6 @@ _NOT_ALL_OF_IT = (
 )
 
 
-def _range(low, high, unit="hrs"):
-    return "%s–%s %s" % (low, high, unit)
-
-
 def to_markdown(doc, analysis=None):
     m = normalize(doc)
     a = analysis or analyze(m)
@@ -509,7 +565,10 @@ def to_markdown(doc, analysis=None):
         out.append("You described **%d steps** taking **%s hours a month** of "
                    "somebody's hands." % (t["steps"], t["hours_month"]))
         out.append("")
-        if t["pending"]:
+        if t["nothing_ticked"]:
+            out.append("Nothing on this sheet has been ticked yet, so nothing "
+                       "is claimed against it.")
+        elif t["pending"]:
             out.append("Of that, nothing can be sized yet — none of the ticked "
                        "steps have a volume given. A zero here is not a "
                        "finding; it's the sheet waiting on the owner.")
@@ -590,7 +649,10 @@ def to_text(doc, analysis=None):
     lines = ["%s — what could come off your plate" % (m["client"] or m["name"]), ""]
     lines.append("%d steps, %s hours a month of hand-time."
                  % (t["steps"], t["hours_month"]))
-    if t["pending"]:
+    if t["nothing_ticked"]:
+        lines.append("Addressable: nothing claimed — nothing on this sheet "
+                     "has been ticked yet.")
+    elif t["pending"]:
         lines.append("Addressable: not sized yet — none of the ticked steps "
                      "have a volume given.")
     else:

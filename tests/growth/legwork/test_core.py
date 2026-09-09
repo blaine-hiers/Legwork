@@ -104,9 +104,12 @@ class TheRangeRule(unittest.TestCase):
 
     def test_the_display_guard_fires_when_rounding_still_collapses_it(self):
         """issue #1's second guard: the fractions can be fine and the figure
-        actually printed can still be a single point, one rounding later."""
+        actually printed can still be a single point, one rounding later.
+        This gap is smaller than a tenth of a second -- no real form input
+        lands here; see `TheRangeCollapseFix` for what a real small
+        quantity (e.g. half a minute) renders as instead."""
         with self.assertRaises(patterns.SavingsError):
-            core._range_or_minutes(0.0, 0.00001)     # rounds flat in hrs *and* min
+            core._finest_range(0.0, 0.00001)     # collapses at every unit tried
 
 
 class TheRangeCollapseFix(unittest.TestCase):
@@ -154,6 +157,62 @@ class TheRangeCollapseFix(unittest.TestCase):
             ranges = rendered_ranges(text)
             self.assertTrue(ranges, text)
             for low, high in ranges:
+                self.assertNotEqual(low, high, text)
+
+    def test_real_volume_with_nothing_ticked_is_not_the_same_as_pending(self):
+        """Review finding #1: real hours on the sheet but no pattern ticked
+        anywhere fell into the same `else` as "ticked, no volume yet" and
+        rendered the exact "0-0 hrs / 0% to 0%" this issue exists to kill."""
+        doc = sheet([], minutes=30, runs=10)          # real time, nothing ticked
+        a = core.analyze(doc)
+        t = a["totals"]
+        self.assertGreater(t["hours_month"], 0)
+        self.assertTrue(t["nothing_ticked"])
+        self.assertFalse(t["pending"])
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            self.assertNotIn("0–0", text)
+            self.assertNotIn("0% to 0%", text)
+            for low, high in rendered_ranges(text):
+                self.assertNotEqual(low, high, text)
+
+    def test_a_small_real_quantity_renders_instead_of_crashing(self):
+        """Review finding #2 (the worst of the three): half a minute, run
+        every other month, with `chased` -- a value an owner can legitimately
+        type into this app's own form -- raised SavingsError out through
+        analyze()/to_markdown()/to_text() instead of rendering. The guard
+        must stay reachable for a genuinely broken model (see the display
+        guard test above), but not for input this ordinary."""
+        doc = {"name": "T", "client": "C", "hourly_cost": 0,
+               "steps": [{"id": "s1", "name": "Tiny real step", "minutes": 0.5,
+                          "runs_per_month": 0.5, "handling": ["chased"]}]}
+        a = core.analyze(doc)                          # must not raise
+        row = a["steps"][0]
+        self.assertFalse(row["quantity_pending"])
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            ranges = rendered_ranges(text)
+            self.assertTrue(ranges, text)
+            for low, high in ranges:
+                self.assertNotEqual(low, high, text)
+
+    def test_totals_do_not_double_round_into_a_collapse(self):
+        """Review finding #3: totals["saved_low"]/["saved_high"] were summed
+        from each step's already-rounded hours and rounded again, which
+        could collapse the total even while totals["addressable"] (built
+        from the same raw claim, rounded once) showed a real range."""
+        doc = {"name": "T", "hourly_cost": 0, "steps": [
+            {"id": "s1", "name": "A", "minutes": 2, "runs_per_month": 2,
+             "handling": ["decided"]},
+            {"id": "s2", "name": "B", "minutes": 1.4, "runs_per_month": 2,
+             "handling": ["chased"]},
+        ]}
+        a = core.analyze(doc)
+        t = a["totals"]
+        self.assertFalse(t["nothing_ticked"])
+        self.assertFalse(t["pending"])
+        self.assertNotEqual(t["saved_low"], t["saved_high"])
+        self.assertIn("–", t["addressable"])
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            for low, high in rendered_ranges(text):
                 self.assertNotEqual(low, high, text)
 
 
