@@ -6,6 +6,7 @@ one that puts figures in front of a prospect before anybody has been paid. Every
 other test here is support for that one.
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -34,6 +35,28 @@ def sheet(*handling_per_step, **kw):
             "handling": list(h),
         } for i, h in enumerate(handling_per_step)],
     }
+
+
+# Every shape a rendered range comes in across `to_markdown`/`to_text`: an
+# en-dash pair ("1.2–1.8 hrs", "$0–$45"), a percent pair written with "to"
+# ("0% to 18% of it"), and a percent pair in parens with a plain hyphen
+# ("(0%-18%)"). issue #1 was a range that survived every upstream guard and
+# still printed with both ends equal, so the check that matters reads the
+# rendered text itself rather than the numbers that produced it.
+_RANGE_PATTERNS = [
+    re.compile(r"\$?(\d+(?:\.\d+)?)\s*–\s*\$?(\d+(?:\.\d+)?)"),
+    re.compile(r"(\d+(?:\.\d+)?)%\s+to\s+(\d+(?:\.\d+)?)%"),
+    re.compile(r"\((\d+(?:\.\d+)?)%-(\d+(?:\.\d+)?)%\)"),
+]
+
+
+def rendered_ranges(text):
+    """Every low/high pair a client would actually read off this text."""
+    out = []
+    for pattern in _RANGE_PATTERNS:
+        for lo, hi in pattern.findall(text):
+            out.append((float(lo), float(hi)))
+    return out
 
 
 class TheRangeRule(unittest.TestCase):
@@ -78,6 +101,60 @@ class TheRangeRule(unittest.TestCase):
                 core.analyze(sheet(["retyped"]))
         finally:
             core._compose = original
+
+    def test_the_display_guard_fires_when_rounding_still_collapses_it(self):
+        """issue #1's second guard: the fractions can be fine and the figure
+        actually printed can still be a single point, one rounding later."""
+        with self.assertRaises(patterns.SavingsError):
+            core._range_or_minutes(0.0, 0.00001)     # rounds flat in hrs *and* min
+
+
+class TheRangeCollapseFix(unittest.TestCase):
+    """issue #1: a saving that survives every upstream guard as a real range
+    can still round to "0-0" (or "0% to 0%") by the time it reaches the
+    page. Every case below renders the actual `to_markdown`/`to_text` output
+    and checks what a client would actually read, not the numbers behind it.
+    """
+
+    def test_a_starter_as_loaded_never_renders_a_collapsed_range(self):
+        """Every starter forces zero volume on load (`04`'s own rule) while
+        shipping every step pre-ticked -- exactly the state the bug lived in."""
+        for meta in starters.list_starters():
+            doc = starters.get_starter(meta["key"])
+            a = core.analyze(doc)
+            self.assertTrue(a["totals"]["pending"], meta["key"])
+            for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+                self.assertNotIn("0–0", text, meta["key"])
+                for low, high in rendered_ranges(text):
+                    self.assertNotEqual(low, high,
+                                        "%s: %r" % (meta["key"], text))
+
+    def test_a_small_but_real_quantity_still_renders_a_range(self):
+        """The exact repro from issue #1: 2 minutes, run once a month."""
+        doc = core.blank_demo("probe")
+        doc["steps"] = [{"name": "Tiny rare step", "minutes": 2,
+                         "runs_per_month": 1, "handling": ["decided"]}]
+        a = core.analyze(doc)
+        row = a["steps"][0]
+        self.assertFalse(row["quantity_pending"])
+        self.assertEqual((row["saved_low"], row["saved_high"]), (0, 0))
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            ranges = rendered_ranges(text)
+            self.assertTrue(ranges, text)
+            for low, high in ranges:
+                self.assertNotEqual(low, high, text)
+
+    def test_a_normal_step_renders_a_plain_range_untouched(self):
+        """Nothing here should need the minute-level fallback at all."""
+        doc = sheet(["retyped", "chased"])
+        a = core.analyze(doc)
+        self.assertFalse(a["steps"][0]["quantity_pending"])
+        self.assertIn("hrs", a["steps"][0]["addressable"])
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            ranges = rendered_ranges(text)
+            self.assertTrue(ranges, text)
+            for low, high in ranges:
+                self.assertNotEqual(low, high, text)
 
 
 class TheJudgementPattern(unittest.TestCase):
