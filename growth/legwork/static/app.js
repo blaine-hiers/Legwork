@@ -22,11 +22,48 @@
 
   // ------------------------------------------------------------ plumbing
 
-  var save = UI.autosave(function () {
+  /* The sheet object graph is built once, by `open`, and lives until another
+     sheet is opened. Nothing else is allowed to replace it.
+
+     That is a rule, not an implementation detail. Every field on the screen is
+     wired straight to the step object it edits — `oninput: function () {
+     step[key] = ...; }` — so the handlers hold references *into* this graph.
+     `S.sheet = r.sheet` in the save handler swapped in a freshly deserialised
+     copy whose steps were new objects, and from that moment every keystroke
+     updated an orphan: the input showed the new number, the sheet that got
+     saved and analysed did not. One edit per sheet-opening was kept and every
+     one after it went nowhere, with no error. Calling `paintSteps()` after
+     each save would re-point the handlers, but it rebuilds the inputs under
+     the person typing into them and takes the focus and the caret with it —
+     in the one conversation this app exists for. So the response is merged in
+     instead.
+
+     Only the half of it the server owns, though. What is on the screen was
+     typed more recently than the copy that came back, and may have been typed
+     while the request was still in flight, so adopting `steps` or `client`
+     from the response would undo live typing — the same data loss by a longer
+     route. Bookkeeping the server assigns (stamps, version, which starter it
+     came from) is the part the screen has no opinion about, and it is taken by
+     exclusion so a field added to the document later lands here by default. */
+  var TYPED = { name: 1, client: 1, industry: 1, notes: 1, hourly_cost: 1, steps: 1 };
+
+  function adoptSaved(saved) {
+    // A reply about the sheet that was open two clicks ago must not be written
+    // into the one that is open now.
+    if (!saved || !S.sheet || saved.id !== S.sheet.id) return false;
+    Object.keys(saved).forEach(function (key) {
+      if (!TYPED[key]) S.sheet[key] = saved[key];
+    });
+    return true;
+  }
+
+  var save;                 // built in boot, where the status pill exists
+
+  function doSave() {
     if (!S.sheet || !S.sheet.id) return Promise.resolve();
     return api.put("/api/sheets/" + encodeURIComponent(S.sheet.id), S.sheet)
-      .then(function (r) { S.sheet = r.sheet; paintAnalysis(r.analysis); });
-  }, null);
+      .then(function (r) { if (adoptSaved(r.sheet)) paintAnalysis(r.analysis); });
+  }
 
   /* Recompute is separate from save on purpose. The numbers are what the owner
      is watching while you type, and making them wait on a write to disk puts a
@@ -89,6 +126,7 @@
       .then(function (r) {
         S.sheet = r.sheet;
         S.sample = "";
+        save.idle();        // it came off disk: the pill says so before any typing
         try { localStorage.setItem(LAST, id); } catch (e) {}
         paintSheet();
         paintAnalysis(r.analysis);
@@ -561,6 +599,11 @@
 
   function boot() {
     $("#themeSlot").appendChild(UI.themeButton());
+
+    // The pill in the header is the only place this app can say whether the
+    // typing is safe. It was passed `null`, so the markup carried a status
+    // element that nothing ever wrote to and the app said nothing either way.
+    save = UI.autosave(doSave, $("#saveStatus"));
 
     $("#btnNew").addEventListener("click", newSheet);
     $("#btnAddStep").addEventListener("click", addStep);
