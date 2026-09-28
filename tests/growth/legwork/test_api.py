@@ -393,6 +393,73 @@ class TheSaveLoop(unittest.TestCase):
         self.assertEqual(sheet.get("starter"), "distributor-quote")
 
 
+class ChaseParsing(unittest.TestCase):
+    """`parseChase` in app.js, checked the same way `TheSaveLoop` checks the
+    save loop: no JS runtime in this suite, so the algorithm is mirrored in
+    Python and driven over the real `/api/demo/chase` endpoint, and the JS
+    source is checked structurally to keep the two in step.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+
+    @staticmethod
+    def parse_chase(text):
+        """Mirrors app.js's parseChase() exactly. Kept in step by the
+        structural test below."""
+        rows = []
+        for line in str(text or "").split("\n"):
+            if not line.strip():
+                continue
+            bits = line.split(",")
+            if len(bits) < 2:
+                rows.append({"who": line.strip(), "what": "", "due": ""})
+                continue
+            rows.append({
+                "who": bits[0].strip(),
+                "what": ",".join(bits[1:-1]).strip(),
+                "due": bits[-1].strip(),
+            })
+        return rows
+
+    def body_of(self, name):
+        start = self.JS.index("function %s(" % name)
+        end = self.JS.index("\n  }\n", start)
+        return self.JS[start:end]
+
+    def test_the_page_and_this_test_agree_on_when_a_line_is_dropped(self):
+        body = self.body_of("parseChase")
+        self.assertIn("if (!line.trim()) return null", body)
+        self.assertNotIn("bits.length < 2 || !line.trim()", body,
+                         "a no-comma line is being dropped again")
+
+    def test_a_no_comma_line_is_listed_not_dropped(self):
+        rows = self.parse_chase(
+            "Marcus Feld,quote 4471,2026-07-20\njust some garbled paste\n")
+        self.assertEqual(len(rows), 2)
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        self.assertEqual(code, 200)
+        result = r["result"]
+        self.assertEqual(len(result["unreadable"]), 1)
+        self.assertEqual(result["unreadable"][0]["who"], "just some garbled paste")
+
+    def test_a_blank_line_is_ignored_silently(self):
+        rows = self.parse_chase("Marcus Feld,quote 4471,2026-07-20\n\n\n")
+        self.assertEqual(len(rows), 1)
+
+    def test_the_count_accounts_for_everything_pasted(self):
+        pasted = ("Marcus Feld,quote 4471,2026-07-20\n"
+                   "Dana,the PO,2026-08-02\n"
+                   "no comma here\n"
+                   "\n")
+        rows = self.parse_chase(pasted)
+        self.assertEqual(len(rows), 3)     # only the blank line is dropped
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        result = r["result"]
+        self.assertEqual(len(result["rows"]) + len(result["unreadable"]), 3)
+
+
 class TheShell(unittest.TestCase):
     """The half of the rule that breaks quietly — see `system/apps/CLAUDE.md`."""
 

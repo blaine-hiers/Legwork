@@ -460,8 +460,14 @@
 
   function parseChase(text) {
     return String(text || "").split("\n").map(function (line) {
+      if (!line.trim()) return null;   // a blank line, not a finding
       var bits = line.split(",");
-      if (bits.length < 2 || !line.trim()) return null;
+      if (bits.length < 2) {
+        // No comma to split on. Sent through anyway, with no due date, so
+        // the backend lists it under "Dates it could not read" instead of
+        // it vanishing before the count is even taken.
+        return { who: line.trim(), what: "", due: "" };
+      }
       return {
         who: (bits[0] || "").trim(),
         what: (bits.slice(1, bits.length - 1).join(",") || "").trim(),
