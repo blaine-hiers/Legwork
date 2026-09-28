@@ -105,11 +105,30 @@ class TheRangeRule(unittest.TestCase):
     def test_the_display_guard_fires_when_rounding_still_collapses_it(self):
         """issue #1's second guard: the fractions can be fine and the figure
         actually printed can still be a single point, one rounding later.
-        This gap is smaller than a tenth of a second -- no real form input
-        lands here; see `TheRangeCollapseFix` for what a real small
-        quantity (e.g. half a minute) renders as instead."""
+        A pair that isn't a range at all is the model-broke case this
+        guards; see `TheRangeCollapseFix` for what a real small quantity
+        (e.g. half a minute) renders as instead."""
         with self.assertRaises(patterns.SavingsError):
-            core._finest_range(0.0, 0.00001)     # collapses at every unit tried
+            core._finest_range(0.5, 0.5)     # collapses at every unit tried
+
+    def test_a_real_range_finer_than_a_tenth_of_a_second_still_renders(self):
+        """The form takes 0.01 minutes run 0.5 times a month. That is a
+        real, distinct range too fine for any unit here, and it must
+        render, not raise into a 500."""
+        self.assertEqual(core._finest_range(0.0, 0.00001), "0–0.1 sec")
+        for minutes, runs in ((0.01, 0.01), (0.01, 0.5), (0.05, 0.05),
+                              (0.1, 0.05), (0.25, 0.01), (0.5, 0.01)):
+            for handling in (["chased"], ["chased", "decided"]):
+                core.analyze({"hourly_cost": 120, "steps": [{"minutes": minutes,
+                              "runs_per_month": runs, "handling": handling}]})
+
+    def test_the_hours_in_money_how_never_collapse_to_one_figure(self):
+        """The parenthetical hours used to round each end independently
+        to four places: 0.01 min run 0.62 times read "0.0001–0.0001 hrs"."""
+        a = core.analyze({"hourly_cost": 120, "steps": [{"minutes": 0.01,
+                         "runs_per_month": 0.62, "handling": ["chased"]}]})
+        how = a["steps"][0]["money_how"]
+        self.assertIn("(0–0.0001 hrs)", how)
 
 
 class TheRangeCollapseFix(unittest.TestCase):

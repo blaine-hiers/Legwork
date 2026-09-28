@@ -226,6 +226,15 @@ def _finest_range(low_min, high_min):
     low_s1, high_s1 = _round(low_min * 60, 1), _round(high_min * 60, 1)
     if high_s1 > low_s1:
         return "%s–%s sec" % (low_s1, high_s1)
+    # Still one figure at a tenth of a second, yet a real range -- reachable
+    # from the form (0.01 min, run 0.5 times a month). Floor the low end and
+    # ceil the high end, the `_percent_span` trick, which can't collapse a
+    # real range, rather than raise into a 500. Only a pair that isn't a
+    # range at all -- the model-broke case -- still raises.
+    if high_min > low_min:
+        lo = math.floor(round(low_min * 600, 6)) / 10.0
+        hi = math.ceil(round(high_min * 600, 6)) / 10.0
+        return "%s–%s sec" % (_round(lo, 1), _round(hi, 1))
     raise patterns.SavingsError(
         "a real, non-zero range (%.6f-%.6f minutes) still reads as a single "
         "figure at a tenth of a second. A saving on a client's page is a "
@@ -281,6 +290,21 @@ def _finest_money(low_min, high_min, hourly_cost):
     not the value itself.
     """
     return low_min / 60.0 * hourly_cost, high_min / 60.0 * hourly_cost
+
+
+def _hours_span(low_hrs, high_hrs, places=4):
+    """The hours in `money_how`'s parenthetical, as two strings. Floor the
+    low end and ceil the high end at `places` decimals, the same trick
+    `_money_range` and `_percent_span` use, so two different claims can't
+    both round to one figure ("0.0001–0.0001 hrs"). The product is
+    rounded first so float noise like 60.00000000000001 doesn't ceil a
+    clean 0.006 up to 0.0061.
+    """
+    f = 10 ** places
+    lo = math.floor(round(low_hrs * f, 6)) / f
+    hi = math.ceil(round(high_hrs * f, 6)) / f
+    text = lambda v: ("%.*f" % (places, v)).rstrip("0").rstrip(".") or "0"
+    return text(lo), text(hi)
 
 
 def _money_text(amount):
@@ -497,8 +521,8 @@ def _step_analysis(step, hourly_cost):
             # rate actually multiplies, alongside the finer-precision time
             # already on the line above this one, so the sentence is an
             # equation a business owner could check rather than a false one.
-            hrs_low = _round(claim_low_min / 60.0, 4)
-            hrs_high = _round(claim_high_min / 60.0, 4)
+            hrs_low, hrs_high = _hours_span(claim_low_min / 60.0,
+                                            claim_high_min / 60.0)
             out["money_how"] = (
                 "%s a month (%s–%s hrs) × $%s an hour ≈ %s–%s a month"
                 % (addressable, hrs_low, hrs_high, rate_disp,
