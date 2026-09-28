@@ -233,5 +233,53 @@ class StaleAnalyzeReplyDoesNotRepaint(_BrowserCase):
             restore()
 
 
+@unittest.skipUnless(_PLAYWRIGHT_IMPORTABLE, "playwright is not installed")
+class GuardedErrorsStaySilentRealBugsSurface(_BrowserCase):
+    """#6, both halves. A failure `UI.guard()` already toasted must produce
+    no pageerror (that was the original bug: it produced one anyway). A
+    genuine bug thrown inside one of those same `.then()` chains — nothing
+    to do with what guard() caught — must still surface as one, the way it
+    would with no terminal .catch() at all."""
+
+    def test_a_guard_toasted_failure_produces_no_pageerror(self):
+        def fail_create(route, request):
+            route.fulfill(status=500, content_type="application/json",
+                          body=json.dumps({"error": "boom"}))
+
+        self.page.route("**/api/sheets", lambda route, request:
+                        fail_create(route, request) if request.method == "POST"
+                        else route.continue_())
+
+        self.page.click("#btnNew")
+        self.page.click("text=Start from nothing")
+        self.page.wait_for_selector("#toasts .toast.bad", timeout=10000)
+        self.assertIn("boom", self.page.locator("#toasts .toast.bad").inner_text())
+
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.pageerrors, [],
+                         "an already-toasted guard() failure must not also "
+                         "surface as a pageerror")
+
+    def test_an_unrelated_bug_in_the_same_chain_still_surfaces(self):
+        """Reproduces the reviewer's finding directly: make the code that
+        runs after a successful, guarded fetch throw a real TypeError, by
+        having the server hand `open()` a reply with no `sheet` in it."""
+        id_a = self.start_from_nothing()
+
+        def corrupt_reply(route, request):
+            if request.method == "GET":
+                route.fulfill(status=200, content_type="application/json",
+                              body="{}")
+            else:
+                route.continue_()
+
+        self.page.route("**/api/sheets/%s" % id_a, corrupt_reply)
+        self.open_sheet(id_a)         # re-opens the same sheet -> hits the route
+
+        self.page.wait_for_timeout(500)
+        self.assertTrue(self.pageerrors, "a genuine bug in the .then() chain "
+                        "was swallowed along with guard()'s own rethrow")
+
+
 if __name__ == "__main__":
     unittest.main()

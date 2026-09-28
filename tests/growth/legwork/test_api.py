@@ -538,25 +538,36 @@ class ChaseParsing(unittest.TestCase):
 
 
 class PromiseChains(unittest.TestCase):
-    """Every `UI.guard(...)` chain in app.js must end in its own `.catch()`.
-
-    `guard()` already toasts the error and rethrows (see `_shared/ui.js`), so
-    a chain fired from a UI event handler with no further `.then()`/`.catch()`
-    downstream leaves that rethrow with nowhere to land: an unhandled promise
-    rejection, console noise with no user-visible effect since the toast
-    already ran. There is no JS runtime in this suite to actually trigger a
-    rejection and watch it stay unhandled, so this is checked the way the
-    rest of app.js is checked here: structurally, against the source text.
+    """Every `UI.guard(...)` chain in app.js must end in its own `.catch()`
+    — and that catch must swallow only the rejection `guard()` itself
+    already toasted, not a genuine bug thrown further down the same
+    `.then()` chain. `guard()` marks the error it toasts and rethrows (see
+    `_shared/ui.js`); each terminal catch here checks that mark before
+    deciding to swallow. Real end-to-end proof that a real bug still
+    surfaces, and a toasted one does not, lives in test_browser.py's
+    `GuardedErrorsStaySilentRealBugsSurface` (skipped there when Playwright
+    isn't installed) — this class checks the shape structurally, which
+    holds regardless.
     """
 
     JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+    UI_JS = (_ROOT / "_shared" / "static" / "ui.js").read_text(encoding="utf-8")
 
-    def test_every_guard_chain_swallows_its_own_rethrow(self):
+    def test_guard_marks_the_error_it_toasts_before_rethrowing(self):
+        start = self.UI_JS.index("function guard(")
+        end = self.UI_JS.index("\n  }\n", start)
+        body = self.UI_JS[start:end]
+        self.assertIn("uiGuardToasted = true", body)
+        self.assertLess(body.index("uiGuardToasted = true"), body.index("throw err"),
+                        "the mark must be set before the rethrow")
+
+    def test_every_guard_chain_swallows_only_the_marked_error(self):
         guards = self.JS.count("UI.guard(")
         self.assertGreater(guards, 0, "UI.guard( no longer appears in app.js")
-        swallowed = self.JS.count("guard already toasted; nothing else to do")
-        self.assertEqual(swallowed, guards,
-                         "a UI.guard(...) chain is missing its terminal .catch()")
+        rethrows_unmarked = self.JS.count("if (!e || !e.uiGuardToasted) throw e;")
+        self.assertEqual(rethrows_unmarked, guards,
+                         "a UI.guard(...) chain's terminal .catch() must "
+                         "rethrow anything guard() didn't itself toast")
 
     def test_importing_a_wrong_shaped_file_is_still_a_clean_400(self):
         """The user-facing side of #6: unchanged. `guard()` still gets a

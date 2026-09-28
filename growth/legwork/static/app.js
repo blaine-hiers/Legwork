@@ -117,7 +117,12 @@
           if (S.sheet && S.sheet.id === s.id) { S.sheet = null; S.analysis = null; paintSheet(); }
           return refreshSheets();
         })
-        .catch(function () { /* guard already toasted; nothing else to do */ });
+        .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
     });
   }
 
@@ -158,7 +163,12 @@
           paintAsk("");
         }
       })
-      .catch(function () { /* guard already toasted; nothing else to do */ });
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   function paintAsk(text) {
@@ -202,7 +212,12 @@
       .then(function (r) {
         return refreshSheets().then(function () { return open(r.sheet.id); });
       })
-      .catch(function () { /* guard already toasted; nothing else to do */ });
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   // ---------------------------------------------------------- the fields
@@ -501,7 +516,12 @@
 
     UI.guard(api.post("/api/demo/" + encodeURIComponent(key), payload), "Demo")
       .then(function (r) { paintDemo(key, r.result); })
-      .catch(function () { /* guard already toasted; nothing else to do */ });
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   function paintDemo(key, res) {
@@ -592,7 +612,12 @@
     if (!S.sheet) return;
     UI.guard(api.post("/api/export/markdown", S.sheet), "Download")
       .then(function (r) { UI.download(r.filename, r.text, r.mime); })
-      .catch(function () { /* guard already toasted; nothing else to do */ });
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   // -------------------------------------------------------------- import
@@ -615,7 +640,12 @@
             UI.toast.warn("Times and names came across. What happens to the " +
               "information did not — a map never recorded it, so tick it as they talk.", 9000);
           })
-          .catch(function () { /* guard already toasted; nothing else to do */ });
+          .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
       };
       reader.readAsText(file);
     });

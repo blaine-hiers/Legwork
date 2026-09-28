@@ -259,6 +259,12 @@
   function guard(p, what) {
     return p.catch(function (err) {
       toast.bad((what ? what + ": " : "") + (err && err.message ? err.message : err));
+      // Marked so a caller's own terminal .catch can tell "guard already
+      // toasted this one" apart from a genuine bug thrown further down the
+      // same chain — swallowing the first is fine, swallowing the second
+      // hides real bugs. Backward compatible: a caller that never checks
+      // the mark sees the exact same rethrow as before.
+      try { if (err && typeof err === "object") err.uiGuardToasted = true; } catch (e) {}
       throw err;
     });
   }
