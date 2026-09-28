@@ -65,6 +65,13 @@ def _hours(minutes):
     return _round(minutes / 60.0, 1)
 
 
+def _hours_text(hours, minutes):
+    """`hours` as a reader sees it: "under 0.1" when real time rounds to 0.0
+    at one decimal, so a row of small steps never reads "0 hrs" under a
+    total that (rightly) counts them."""
+    return "under 0.1" if hours == 0 and minutes > 0 else "%s" % hours
+
+
 def _band(hours):
     """Impact 1–5 from hours a month. Bands, not a curve — an owner can check a
     band against their own sense of the place, and cannot check a curve."""
@@ -452,6 +459,7 @@ def _step_analysis(step, hourly_cost):
         # Unrounded, so sums across steps round once rather than adding up
         # figures that each already lost up to 0.05 hrs.
         "minutes_month": minutes_month,
+        "hours_text": _hours_text(_hours(minutes_month), minutes_month),
         "hours_how": "%s min × %s a month ÷ 60 = %s hrs"
                      % (_round(per_run, 0), _round(runs, 0), _hours(minutes_month)),
         "patterns": rows,
@@ -657,6 +665,7 @@ def _role_rollup(rows, role_rates, hourly_cost, total_hours_month):
             "who": label,
             "not_said": is_bucket,
             "hours_month": hours,
+            "hours_text": _hours_text(hours, sum(r["minutes_month"] for r in role_rows)),
             "share": share,
             "has_own_rate": has_own_rate,
             "money_how": None,
@@ -888,7 +897,7 @@ def to_markdown(doc, analysis=None):
         out.append("")
         out.append("**%s**" % f["name"])
         out.append("")
-        out.append("- Takes %s hours a month today (%s)" % (f["hours_month"], f["hours_how"]))
+        out.append("- Takes %s hours a month today (%s)" % (f["hours_text"], f["hours_how"]))
         if f["quantity_pending"]:
             out.append("- Addressable: **not sized yet** — no volume given for this step")
         else:
@@ -918,7 +927,7 @@ def to_markdown(doc, analysis=None):
         out.append("| %s | %s | %s hrs/mo | %s | %s |" % (
             r["name"].replace("|", "/"),
             (r["who"] or "—").replace("|", "/"),
-            r["hours_month"],
+            r["hours_text"],
             addressable_cell,
             r["priority_how"] or "nothing ticked",
         ))
@@ -933,7 +942,7 @@ def to_markdown(doc, analysis=None):
             money_cell = role["money_how"] or role.get("rate_how") or role["addressable"]
             out.append("| %s | %s | %d%% | %s |" % (
                 role["who"].replace("|", "/"),
-                role["hours_month"],
+                role["hours_text"],
                 role["share"],
                 money_cell.replace("|", "/"),
             ))
@@ -990,7 +999,7 @@ def to_text(doc, analysis=None):
         lines.append("BY WHO DOES IT:")
         for role in a["by_role"]:
             lines.append("  %s: %s hrs/mo (%d%%)"
-                         % (role["who"], role["hours_month"], role["share"]))
+                         % (role["who"], role["hours_text"], role["share"]))
             note = role["money_how"] or role.get("rate_how") or role["addressable"]
             lines.append("    %s" % note)
         lines.append("")

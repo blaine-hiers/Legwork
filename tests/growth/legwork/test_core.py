@@ -889,6 +889,23 @@ class ByRole(unittest.TestCase):
                                 "sheet %d role %r" % (i, r["who"]))
             assert_roles_reconcile(self, a, "sheet %d" % i)
 
+    def test_the_one_pager_never_shows_zero_hour_rows_under_a_real_total(self):
+        """40 steps of 2.99 min run once a month: each rounds to 0.0 hrs, the
+        total rightly says 2. The one-pager's step table used to print every
+        row as "0 hrs/mo" under that headline; a row with real time now reads
+        "under 0.1"."""
+        doc = self._doc([("Front office", 2.99, 1, ["retyped"]) for _ in range(40)], hourly_cost=25)
+        a = core.analyze(doc)
+        self.assertEqual(a["totals"]["hours_month"], 2.0)
+        md = core.to_markdown(doc)
+        self.assertNotIn("| 0.0 hrs/mo |", md)
+        self.assertNotIn("| 0 hrs/mo |", md)
+        self.assertIn("| under 0.1 hrs/mo |", md)
+        self.assertEqual(a["steps"][0]["hours_text"], "under 0.1")
+        # A genuinely empty step still says 0.
+        empty = core.analyze(self._doc([("Front office", 0, 0, [])]))
+        self.assertEqual(empty["steps"][0]["hours_text"], "0")
+
     def test_per_role_hours_sum_exactly_at_extreme_magnitudes_and_max_steps(self):
         """The reviewer's own repro: a 34-step sheet at roughly a million
         minutes/runs found a 3.8e-6 drift under the old approach. Swept

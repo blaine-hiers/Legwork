@@ -355,7 +355,7 @@
     } else {
       a.by_role.forEach(function (role) {
         r.appendChild(el("div", { class: "workline",
-          text: role.who + ": " + role.hours_month + " hrs/mo (" + role.share + "%)" }));
+          text: role.who + ": " + role.hours_text + " hrs/mo (" + role.share + "%)" }));
         r.appendChild(el("div", { class: "arith",
           text: role.money_how || role.rate_how || role.addressable }));
       });
