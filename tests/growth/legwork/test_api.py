@@ -117,6 +117,39 @@ class Sheets(unittest.TestCase):
         self.assertGreater(saved["analysis"]["totals"]["saved_high"],
                            saved["analysis"]["totals"]["saved_low"])
 
+    def test_the_tenth_edit_in_a_row_lands_exactly_like_the_first(self):
+        """One save per sheet is not the shape of the conversation this serves.
+
+        The numbers change for as long as the owner is talking, so the tenth
+        one typed has to reach the disk on the same terms as the first.
+        """
+        _, r = call("POST", "/api/sheets", {"starter": "scheduling"})
+        sheet = r["sheet"]
+        sid = sheet["id"]
+        for n in range(1, 11):
+            sheet["steps"][0]["minutes"] = n
+            sheet["client"] = "Client %d" % n
+            code, saved = call("PUT", "/api/sheets/" + sid, sheet)
+            self.assertEqual(code, 200, "edit %d" % n)
+            self.assertEqual(saved["sheet"]["steps"][0]["minutes"], n)
+            _, back = call("GET", "/api/sheets/" + sid)
+            self.assertEqual(back["sheet"]["steps"][0]["minutes"], n, "edit %d" % n)
+            self.assertEqual(back["sheet"]["client"], "Client %d" % n)
+
+    def test_a_step_nobody_touched_yet_still_saves_after_ten_others_did(self):
+        _, r = call("POST", "/api/sheets", {"starter": "field-paperwork"})
+        sheet = r["sheet"]
+        sid = sheet["id"]
+        self.assertGreater(len(sheet["steps"]), 1, "this starter needs two steps")
+        for n in range(1, 11):
+            sheet["steps"][0]["runs_per_month"] = n
+            call("PUT", "/api/sheets/" + sid, sheet)
+        sheet["steps"][-1]["minutes"] = 45
+        call("PUT", "/api/sheets/" + sid, sheet)
+        _, back = call("GET", "/api/sheets/" + sid)
+        self.assertEqual(back["sheet"]["steps"][-1]["minutes"], 45)
+        self.assertEqual(back["sheet"]["steps"][0]["runs_per_month"], 10)
+
     def test_a_saved_sheet_keeps_which_starter_it_came_from(self):
         _, r = call("POST", "/api/sheets", {"starter": "machine-shop-job"})
         sheet = dict(r["sheet"])
@@ -243,6 +276,101 @@ class Exports(unittest.TestCase):
         code, r = call("GET", "/api/sheets/%s/export/pdf" % self.sheet())
         self.assertEqual(code, 404)
         self.assertIn("markdown", r["error"])
+
+
+class TheSaveLoop(unittest.TestCase):
+    """The screen's half of saving, which is where it broke.
+
+    Every input on a step is wired straight to the step object it edits, so the
+    handlers hold references *into* the object graph the page was painted from.
+    Replacing that graph with the copy the server sends back unhooks all of
+    them at once: the inputs keep working, and nothing they write is ever read
+    again. There is no JavaScript runtime in this suite, so the rule is checked
+    twice over -- read out of `app.js`, and replayed over real HTTP with the
+    same reference held the same way.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+    HTML = (_APP / "static" / "index.html").read_text(encoding="utf-8")
+
+    # What a person types, and therefore what the page must never take back
+    # from a response. Kept in step with `app.js` by the test below it.
+    TYPED = {"name", "client", "industry", "notes", "hourly_cost", "steps"}
+
+    def body_of(self, name):
+        """The source of one top-level function in `app.js`."""
+        start = self.JS.index("function %s(" % name)
+        end = self.JS.index("\n  }\n", start)
+        return self.JS[start:end]
+
+    def test_a_save_does_not_swap_the_object_the_inputs_are_wired_to(self):
+        body = self.body_of("doSave")
+        self.assertNotIn("S.sheet =", body,
+                         "the save handler is rebinding the open sheet again")
+        self.assertIn("adoptSaved", body)
+
+    def test_a_save_does_not_rebuild_the_fields_under_the_person_typing(self):
+        body = self.body_of("doSave")
+        for repaint in ("paintSteps(", "paintSheet("):
+            self.assertNotIn(repaint, body,
+                             "repainting on save takes the caret with it")
+
+    def test_the_page_and_this_test_agree_on_what_a_person_types(self):
+        listed = re.search(r"var TYPED = \{([^}]*)\}", self.JS)
+        self.assertTrue(listed, "app.js no longer declares TYPED")
+        keys = set(re.findall(r"(\w+):", listed.group(1)))
+        self.assertEqual(keys, self.TYPED)
+
+    def test_the_status_pill_either_reports_or_is_not_there(self):
+        """It must not sit in the header implying feedback that never comes."""
+        # assertTrue, not assertIn: a failure here would otherwise print the
+        # whole of app.js and bury the one line that says what is wrong.
+        if 'id="saveStatus"' in self.HTML:
+            self.assertTrue('$("#saveStatus")' in self.JS,
+                            "the markup has a save pill that nothing ever paints")
+        self.assertFalse("UI.autosave(doSave, null)" in self.JS,
+                         "autosave is being built with no status element again")
+
+    def test_a_second_edit_reaches_the_stored_document(self):
+        """The screen's loop, replayed: edit, save, edit again, save."""
+        _, r = call("POST", "/api/sheets", {"starter": "hvac-service-call"})
+        sheet = r["sheet"]
+        sid = sheet["id"]
+        step = sheet["steps"][0]           # what the field handler closes over
+
+        def typed_then_saved(minutes):
+            step["minutes"] = minutes      # oninput
+            _, reply = call("PUT", "/api/sheets/" + sid, sheet)
+            for key, value in reply["sheet"].items():        # adoptSaved
+                if key not in self.TYPED:
+                    sheet[key] = value
+            return reply
+
+        typed_then_saved(11)
+        reply = typed_then_saved(22)
+
+        # The handler is still wired to the sheet that gets sent.
+        self.assertIs(step, sheet["steps"][0])
+        # And the hazard is real: the reply's steps are different objects, so
+        # taking them would have left the handler holding an orphan.
+        self.assertIsNot(step, reply["sheet"]["steps"][0])
+
+        _, back = call("GET", "/api/sheets/" + sid)
+        self.assertEqual(back["sheet"]["steps"][0]["minutes"], 22)
+
+    def test_what_comes_back_never_overwrites_what_is_still_being_typed(self):
+        """A reply is older than the screen by the length of the round trip."""
+        _, r = call("POST", "/api/sheets", {"starter": "distributor-quote"})
+        sheet = r["sheet"]
+        sheet["client"] = "Northgate Mechanical"
+        _, reply = call("PUT", "/api/sheets/" + sheet["id"], sheet)
+        sheet["client"] = "Northgate Mechanical Ltd"        # typed in flight
+        for key, value in reply["sheet"].items():           # adoptSaved
+            if key not in self.TYPED:
+                sheet[key] = value
+        self.assertEqual(sheet["client"], "Northgate Mechanical Ltd")
+        self.assertEqual(sheet["id"], reply["sheet"]["id"])
+        self.assertEqual(sheet.get("starter"), "distributor-quote")
 
 
 class TheShell(unittest.TestCase):
