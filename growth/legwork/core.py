@@ -548,8 +548,8 @@ def _apportion_tenths(weights, total_tenths):
     (any non-negative reals, used only to decide who gets the bigger
     share) so the parts sum to exactly `total_tenths` -- largest-remainder
     apportionment, worked in integer tenths so the reconciliation this
-    supports (`sum(role hours) == totals.hours_month`) is exact integer
-    arithmetic, not a coincidence of how two separately-rounded floats
+    supports (the roles' tenths sum to `totals.hours_month`'s tenths) is exact
+    integer arithmetic, not a coincidence of how two separately-rounded floats
     happened to land.
 
     Rounding each part on its own -- summing several already-rounded
@@ -618,26 +618,13 @@ def _role_rollup(rows, role_rates, hourly_cost, total_hours_month):
     shares_tenths = _apportion_tenths(weights, total_tenths)
     hours_list = [_round(t / 10.0, 1) for t in shares_tenths]
 
-    # Exact integer tenths that sum to `total_tenths` still don't always
-    # sum back to `total_hours_month` bit for bit once each is divided by
-    # ten and rounded to a display float -- floating addition isn't
-    # exactly invertible. So the smallest share moves last and is
-    # recomputed as the exact remainder of every other role's own rounded
-    # figure: summing this list in the order it's returned then
-    # reproduces `total_hours_month` exactly, because Sterbenz's lemma
-    # guarantees a floating subtraction is exact whenever the two sides
-    # are within 2x of each other, which the smallest of two or more
-    # non-negative shares against their own total always is.
-    if len(hours_list) >= 2:
-        smallest = min(range(len(hours_list)), key=lambda i: shares_tenths[i])
-        rest = [i for i in range(len(hours_list)) if i != smallest]
-        order = [order[i] for i in rest] + [order[smallest]]
-        shares_tenths = [shares_tenths[i] for i in rest] + [shares_tenths[smallest]]
-        others_total = sum(hours_list[i] for i in rest)
-        hours_list = [hours_list[i] for i in rest] + [total_hours_month - others_total]
-    elif len(hours_list) == 1:
-        hours_list = [total_hours_month]
-
+    # Each role shows its own whole tenths as a one-decimal figure. The
+    # invariant lives in the integers -- the shares sum to `total_tenths`
+    # exactly -- so the displayed role hours always add up to the displayed
+    # total at the one decimal both are shown to. (An earlier attempt made
+    # the float sum bit-exact by giving the smallest role `total - others`;
+    # that only held for one summation order and rendered that role as
+    # float noise, even negative.)
     out = []
     for who, share_tenths, hours in zip(order, shares_tenths, hours_list):
         role_rows = groups[who]

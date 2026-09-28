@@ -59,6 +59,23 @@ def rendered_ranges(text):
     return out
 
 
+
+def tenths(hours):
+    """Hours as whole tenths -- the grid every hours figure is shown on."""
+    return int(round(hours * 10))
+
+
+def assert_roles_reconcile(test, a, case):
+    """The by-role invariant: each role shows a clean one-decimal, non-negative
+    figure, the roles' tenths add up to the total's tenths exactly, and so the
+    displayed role hours sum to the displayed total at that one decimal."""
+    hours = [r["hours_month"] for r in a["by_role"]]
+    for h in hours:
+        test.assertGreaterEqual(h, 0, case)
+        test.assertEqual(h, round(h, 1), "%s: %r" % (case, h))
+    test.assertEqual(sum(tenths(h) for h in hours), tenths(a["totals"]["hours_month"]), case)
+    test.assertEqual(round(sum(hours), 1), a["totals"]["hours_month"], case)
+
 class TheRangeRule(unittest.TestCase):
 
     def test_no_step_can_ever_report_a_single_figure(self):
@@ -767,8 +784,7 @@ class ByRole(unittest.TestCase):
         self.assertNotEqual(bucket["who"], named["who"])
         self.assertAlmostEqual(bucket["hours_month"], 5.0, places=1)     # 30 min x 10/mo
         self.assertAlmostEqual(named["hours_month"], 3.3, places=1)      # 20 min x 10/mo
-        self.assertEqual(bucket["hours_month"] + named["hours_month"],
-                         a["totals"]["hours_month"])
+        assert_roles_reconcile(self, a, "not said repro")
 
     def test_a_zero_effective_rate_gives_an_hours_only_line(self):
         doc = self._doc([("Front office", 30, 10, ["retyped"])])   # no rate anywhere
@@ -804,8 +820,7 @@ class ByRole(unittest.TestCase):
                     ], hourly_cost=rate)
                     case = "minutes=%s runs=%s rate=%s" % (minutes, runs, rate)
                     a = core.analyze(doc)
-                    total = sum(r["hours_month"] for r in a["by_role"])
-                    self.assertEqual(total, a["totals"]["hours_month"], case)
+                    assert_roles_reconcile(self, a, case)
                     for r in a["by_role"]:
                         how = r.get("money_how")
                         if not how:
@@ -813,6 +828,33 @@ class ByRole(unittest.TestCase):
                         currency._every_currency_token_is_well_formed(how, case)
                         for lo, hi in rendered_ranges(how):
                             self.assertNotEqual(lo, hi, "%s: %s" % (case, how))
+
+    def test_roles_doing_unequal_work_reconcile_and_render_cleanly(self):
+        """Roles with unequal minutes and runs -- the realistic case, and the
+        one where giving the smallest role `total - others` rendered it as
+        0.29999999999999893 or even a negative. Includes the reviewer's two
+        counter-examples plus a seeded random sweep."""
+        import random
+        docs = [
+            self._doc([("Front office", 12, 40, ["retyped"]), ("Technician", 22, 8, ["chased"]),
+                       ("Dispatcher", 4, 5, ["chased"])], hourly_cost=25),
+            self._doc([("Front office", 7.696260118067817, 9.834407365068424, ["retyped"]),
+                       ("Technician", 2.9283609919160654, 8.24741163858587, ["chased"]),
+                       ("", 1.8041962473375583, 1.6781639515135212, [])], hourly_cost=22),
+        ]
+        rng = random.Random(11)
+        for _ in range(400):
+            n = rng.randint(1, 8)
+            docs.append(self._doc([
+                (rng.choice(["Front office", "Technician", "Dispatcher", "", "not said"]),
+                 10 ** rng.uniform(-2, 4), 10 ** rng.uniform(-2, 3),
+                 rng.choice([["retyped"], ["chased"], []]))
+                for _ in range(n)], hourly_cost=rng.choice([0, 22, 95])))
+        for i, doc in enumerate(docs):
+            a = core.analyze(doc)
+            assert_roles_reconcile(self, a, "doc %d" % i)
+            text = core.to_text(doc) if hasattr(core, "to_text") else ""
+            self.assertNotRegex(text, r"\d\.\d{5,}", "doc %d renders float noise" % i)
 
     def test_per_role_hours_sum_exactly_at_extreme_magnitudes_and_max_steps(self):
         """The reviewer's own repro: a 34-step sheet at roughly a million
@@ -831,8 +873,7 @@ class ByRole(unittest.TestCase):
             case = "minutes=%s runs=%s" % (minutes, runs)
             a = core.analyze(doc)
             self.assertEqual(len(a["steps"]), core.MAX_STEPS, case)
-            total = sum(r["hours_month"] for r in a["by_role"])
-            self.assertEqual(total, a["totals"]["hours_month"], case)
+            assert_roles_reconcile(self, a, case)
 
 
 if __name__ == "__main__":
