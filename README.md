@@ -11,7 +11,7 @@ an email the owner opens themselves in front of you. That is the entire point.
 
 ```
 py growth/legwork/app.py          # opens in your browser
-py run_all_tests.py               # 102 tests
+py run_all_tests.py               # 110 tests
 ```
 
 Windows: double-click `run.cmd`.
@@ -68,7 +68,7 @@ RFC 2606 and can never resolve.
 ```
 _shared/           server, storage and design system (vendored — see below)
 growth/legwork/    the app
-tests/             102 tests, mirroring the app tree
+tests/             110 tests, mirroring the app tree
 ```
 
 `_shared/` is vendored from a larger private workspace of about twenty of these
