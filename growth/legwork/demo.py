@@ -355,8 +355,9 @@ def chase(rows, today=None):
         try:
             due = datetime.strptime(due_raw[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
-            unreadable.append({"who": who, "what": what, "due": due_raw,
-                               "why": "I can't read that date. It needs to look like 2026-08-14."})
+            why = ("It needs a name and a date, separated by a comma." if not due_raw
+                   else "I can't read that date. It needs to look like 2026-08-14.")
+            unreadable.append({"who": who, "what": what, "due": due_raw, "why": why})
             continue
         days = (today - due).days
         out.append({
@@ -371,8 +372,11 @@ def chase(rows, today=None):
         "rows": out,
         "unreadable": unreadable,
         "late_count": len(late),
+        # The leading count is everything pasted, not just what parsed — a
+        # line that could not be read is still a thing that was checked, and
+        # saying otherwise reads as confirmation that all the input was seen.
         "how": ("%d things checked against %s. %d late, %d due today, %d not yet"
-                % (len(out), today.isoformat(), len(late),
+                % (len(out) + len(unreadable), today.isoformat(), len(late),
                    sum(1 for r in out if r["days_late"] == 0),
                    sum(1 for r in out if r["days_late"] < 0))
                 + (", %d with a date I couldn't read" % len(unreadable) if unreadable else "")

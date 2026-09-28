@@ -507,11 +507,23 @@ class ChaseParsing(unittest.TestCase):
         self.assertEqual(len(result["unreadable"]), 1)
         self.assertEqual(result["unreadable"][0]["who"], "just some garbled paste")
 
+    def test_a_no_comma_line_gets_an_honest_reason_not_a_date_complaint(self):
+        """It has no date at all to complain about — the real problem is
+        that there was nothing to split a name and a date out of."""
+        rows = self.parse_chase("just some garbled paste\n")
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        why = r["result"]["unreadable"][0]["why"]
+        self.assertIn("comma", why)
+        self.assertNotIn("2026-08-14", why)     # the date-format complaint
+
     def test_a_blank_line_is_ignored_silently(self):
         rows = self.parse_chase("Marcus Feld,quote 4471,2026-07-20\n\n\n")
         self.assertEqual(len(rows), 1)
 
-    def test_the_count_accounts_for_everything_pasted(self):
+    def test_the_shown_count_reflects_everything_pasted_not_just_what_parsed(self):
+        """The specific harm the issue names: '2 things checked' when 3 lines
+        were pasted reads as confirmation that all the input was seen."""
         pasted = ("Marcus Feld,quote 4471,2026-07-20\n"
                    "Dana,the PO,2026-08-02\n"
                    "no comma here\n"
@@ -522,6 +534,7 @@ class ChaseParsing(unittest.TestCase):
                        {"rows": rows, "today": "2026-08-02"})
         result = r["result"]
         self.assertEqual(len(result["rows"]) + len(result["unreadable"]), 3)
+        self.assertIn("3 things checked", result["how"])
 
 
 class PromiseChains(unittest.TestCase):
