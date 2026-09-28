@@ -419,6 +419,44 @@ class TheSaveLoop(unittest.TestCase):
         self.assertNotEqual(b["sheet"]["id"], sheet_a["id"])
 
 
+class RecomputeGuard(unittest.TestCase):
+    """#14: a stale `/api/analyze` reply must not repaint the totals panel
+    after switching sheets. `/api/analyze` echoes back no sheet id to check
+    the way a save reply does, so `recompute` has to stamp the id itself at
+    issue time and check it at reply time — the same rule as `adoptSaved`,
+    just carried by a closure variable instead of the response body. No JS
+    runtime here to actually race the two requests, so the guard is checked
+    structurally, the way `TheSaveLoop` checks `open`'s save.now() above.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+
+    def body_of_recompute(self):
+        start = self.JS.index("var recompute = UI.debounce(function () {")
+        end = self.JS.index("}, 220);", start)
+        return self.JS[start:end]
+
+    def test_the_sheet_id_is_stamped_before_the_request_and_checked_before_painting(self):
+        body = self.body_of_recompute()
+        self.assertIn("var issuedFor = S.sheet.id;", body)
+        self.assertIn("paintAnalysis(", body)
+        stamp = body.index("var issuedFor = S.sheet.id;")
+        request = body.index("api.post(")
+        check = body.index("S.sheet.id === issuedFor")
+        paint = body.index("paintAnalysis(")
+        self.assertLess(stamp, request,
+                        "the id must be captured before the request is sent")
+        self.assertLess(check, paint,
+                        "the id must be checked before the reply is painted")
+
+    def test_the_guard_is_shaped_like_adoptSaved_not_a_second_mechanism(self):
+        body = self.body_of_recompute()
+        self.assertIn("S.sheet.id ===", body)
+        save_body = self.JS[self.JS.index("function adoptSaved("):
+                             self.JS.index("function adoptSaved(") + 400]
+        self.assertIn("S.sheet.id", save_body)
+
+
 class ChaseParsing(unittest.TestCase):
     """`parseChase` in app.js, checked the same way `TheSaveLoop` checks the
     save loop: no JS runtime in this suite, so the algorithm is mirrored in

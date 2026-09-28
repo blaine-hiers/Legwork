@@ -70,8 +70,15 @@
      visible stutter in the one moment the app exists for. */
   var recompute = UI.debounce(function () {
     if (!S.sheet) return;
+    // Stamp the sheet id this request was issued for. /api/analyze echoes
+    // back no id of its own to check against, unlike the save reply
+    // adoptSaved guards above — so the id has to be captured here, at issue
+    // time, and compared against whatever is open when the reply lands.
+    var issuedFor = S.sheet.id;
     api.post("/api/analyze", S.sheet)
-      .then(function (r) { paintAnalysis(r.analysis); })
+      .then(function (r) {
+        if (S.sheet && S.sheet.id === issuedFor) paintAnalysis(r.analysis);
+      })
       .catch(function () { /* the sheet is still on screen; a failed sum is not fatal */ });
   }, 220);
 
