@@ -123,6 +123,12 @@
   // ---------------------------------------------------------- open / new
 
   function open(id) {
+    // Flush whatever the debounce is still holding for the sheet that is
+    // open right now, before it gets replaced below. Safe to do only because
+    // adoptSaved (above) drops a reply whose id no longer matches S.sheet by
+    // the time it lands — otherwise this flush's own late reply could win a
+    // race against the sheet being opened here.
+    save.now();
     return UI.guard(api.get("/api/sheets/" + encodeURIComponent(id)), "Open")
       .then(function (r) {
         S.sheet = r.sheet;

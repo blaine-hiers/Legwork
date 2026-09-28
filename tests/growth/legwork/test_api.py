@@ -392,6 +392,32 @@ class TheSaveLoop(unittest.TestCase):
         self.assertEqual(sheet["id"], reply["sheet"]["id"])
         self.assertEqual(sheet.get("starter"), "distributor-quote")
 
+    def test_open_flushes_the_pending_save_before_swapping_the_sheet(self):
+        """#13: `save.now()` must run, and run before `S.sheet` is replaced,
+        or the debounced write lands on the wrong sheet once it fires."""
+        body = self.body_of("open")
+        self.assertIn("save.now()", body)
+        self.assertLess(body.index("save.now()"), body.index("S.sheet = r.sheet"),
+                        "save.now() must flush before the sheet is replaced")
+
+    def test_an_edit_just_before_switching_sheets_is_not_lost(self):
+        """The debounce timer fires after the switch; `open()`'s save.now()
+        is what's supposed to have already flushed it by then."""
+        _, a = call("POST", "/api/sheets", {"starter": "hvac-service-call"})
+        sheet_a = a["sheet"]
+        sheet_a["client"] = "Edited just before switching"   # oninput
+        # open(otherId): save.now() flushing the sheet that's still open ...
+        _, saved = call("PUT", "/api/sheets/" + sheet_a["id"], sheet_a)
+        for key, value in saved["sheet"].items():             # adoptSaved
+            if key not in self.TYPED:
+                sheet_a[key] = value
+        # ... then the switch itself completes.
+        _, b = call("POST", "/api/sheets", {"starter": "distributor-quote"})
+
+        _, back = call("GET", "/api/sheets/" + sheet_a["id"])
+        self.assertEqual(back["sheet"]["client"], "Edited just before switching")
+        self.assertNotEqual(b["sheet"]["id"], sheet_a["id"])
+
 
 class ChaseParsing(unittest.TestCase):
     """`parseChase` in app.js, checked the same way `TheSaveLoop` checks the
