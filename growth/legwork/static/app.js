@@ -109,7 +109,8 @@
         .then(function () {
           if (S.sheet && S.sheet.id === s.id) { S.sheet = null; S.analysis = null; paintSheet(); }
           return refreshSheets();
-        });
+        })
+        .catch(function () { /* guard already toasted; nothing else to do */ });
     });
   }
 
@@ -143,7 +144,8 @@
         } else {
           paintAsk("");
         }
-      });
+      })
+      .catch(function () { /* guard already toasted; nothing else to do */ });
   }
 
   function paintAsk(text) {
@@ -186,7 +188,8 @@
     UI.guard(api.post("/api/sheets", starter ? { starter: starter } : {}), "New sheet")
       .then(function (r) {
         return refreshSheets().then(function () { return open(r.sheet.id); });
-      });
+      })
+      .catch(function () { /* guard already toasted; nothing else to do */ });
   }
 
   // ---------------------------------------------------------- the fields
@@ -484,7 +487,8 @@
     if (key === "document") payload.template = $("#docPick").value;
 
     UI.guard(api.post("/api/demo/" + encodeURIComponent(key), payload), "Demo")
-      .then(function (r) { paintDemo(key, r.result); });
+      .then(function (r) { paintDemo(key, r.result); })
+      .catch(function () { /* guard already toasted; nothing else to do */ });
   }
 
   function paintDemo(key, res) {
@@ -574,7 +578,8 @@
   function download() {
     if (!S.sheet) return;
     UI.guard(api.post("/api/export/markdown", S.sheet), "Download")
-      .then(function (r) { UI.download(r.filename, r.text, r.mime); });
+      .then(function (r) { UI.download(r.filename, r.text, r.mime); })
+      .catch(function () { /* guard already toasted; nothing else to do */ });
   }
 
   // -------------------------------------------------------------- import
@@ -596,7 +601,8 @@
           .then(function () {
             UI.toast.warn("Times and names came across. What happens to the " +
               "information did not — a map never recorded it, so tick it as they talk.", 9000);
-          });
+          })
+          .catch(function () { /* guard already toasted; nothing else to do */ });
       };
       reader.readAsText(file);
     });
