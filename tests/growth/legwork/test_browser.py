@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -157,6 +158,30 @@ class _BrowserCase(unittest.TestCase):
             "text => document.querySelector('#fClient').value === text",
             arg=client, timeout=10000)
 
+    def delay_analyze_for(self, sheet_id, seconds):
+        """Makes the server sleep before answering /api/analyze for exactly
+        this sheet id, leaving every other request untouched. Delaying on
+        the server side (each request its own thread in the
+        ThreadingHTTPServer under test) rather than via Playwright's route
+        interception matters here: a route handler that blocks with
+        time.sleep() blocks Playwright's own driver loop right along with
+        it, which serialises away the very race this test needs to create.
+        Restored by the returned callable — call it in tearDown/finally.
+        """
+        routes = appmod.app._routes
+        for i, (method, rx, fn) in enumerate(routes):
+            if method == "POST" and fn.__name__ == "analyze_body":
+                original = fn
+
+                def delayed(req, _original=original):
+                    if (req.json() or {}).get("id") == sheet_id:
+                        time.sleep(seconds)
+                    return _original(req)
+
+                routes[i] = (method, rx, delayed)
+                return lambda: routes.__setitem__(i, (method, rx, original))
+        raise AssertionError("no POST /api/analyze route found to delay")
+
 
 @unittest.skipUnless(_PLAYWRIGHT_IMPORTABLE, "playwright is not installed")
 class SheetSwitchDoesNotLoseAnEdit(_BrowserCase):
@@ -178,6 +203,34 @@ class SheetSwitchDoesNotLoseAnEdit(_BrowserCase):
         self.page.wait_for_timeout(300)
         _, back = call("GET", "/api/sheets/" + id_a)
         self.assertEqual(back["sheet"]["client"], "Edited right before the switch")
+
+
+@unittest.skipUnless(_PLAYWRIGHT_IMPORTABLE, "playwright is not installed")
+class StaleAnalyzeReplyDoesNotRepaint(_BrowserCase):
+    """#14: a late `/api/analyze` reply from a sheet that is no longer open
+    must not repaint the totals panel of the sheet that is. Delays sheet
+    A's analyze reply and switches to B before it lands."""
+
+    def test_switching_before_a_delayed_reply_lands_keeps_bs_totals(self):
+        id_a = self.create_and_open("scheduling", "Sheet A original")        # 4 steps
+        self.create_and_open("field-paperwork", "Sheet B original")          # 5 steps
+        self.open_by_client("Sheet A original")
+
+        restore = self.delay_analyze_for(id_a, 1.2)
+        try:
+            self.page.fill("#fRate", "50")    # oninput -> touched() -> recompute()
+            self.page.wait_for_timeout(350)   # past the 220ms recompute debounce:
+                                               # A's (now delayed) request is in flight
+            self.open_by_client("Sheet B original")
+            self.assertIn("5 steps", self.page.locator("#totals").inner_text())
+
+            self.page.wait_for_timeout(1500)  # past the 1.2s delay: A's reply lands
+            totals_text = self.page.locator("#totals").inner_text()
+            self.assertIn("5 steps", totals_text,
+                         "a stale reply from sheet A repainted B's totals panel")
+            self.assertNotIn("4 steps", totals_text)
+        finally:
+            restore()
 
 
 if __name__ == "__main__":
