@@ -355,7 +355,7 @@ def chase(rows, today=None):
         try:
             due = datetime.strptime(due_raw[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
-            why = ("It needs a name and a date, separated by a comma." if not due_raw
+            why = ("No date given. It needs a name and a date, separated by a comma." if not due_raw
                    else "I can't read that date. It needs to look like 2026-08-14.")
             unreadable.append({"who": who, "what": what, "due": due_raw, "why": why})
             continue

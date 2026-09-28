@@ -517,6 +517,16 @@ class ChaseParsing(unittest.TestCase):
         self.assertIn("comma", why)
         self.assertNotIn("2026-08-14", why)     # the date-format complaint
 
+    def test_an_empty_date_field_says_no_date_was_given(self):
+        """A comma-separated row whose date column is empty has a comma, so the
+        reason must not claim one is missing; it says no date was given."""
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": [{"who": "Dana", "what": "the PO", "due": ""}],
+                        "today": "2026-08-02"})
+        why = r["result"]["unreadable"][0]["why"]
+        self.assertTrue(why.startswith("No date given."))
+        self.assertNotIn("2026-08-14", why)
+
     def test_a_blank_line_is_ignored_silently(self):
         rows = self.parse_chase("Marcus Feld,quote 4471,2026-07-20\n\n\n")
         self.assertEqual(len(rows), 1)
