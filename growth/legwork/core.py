@@ -262,26 +262,69 @@ def _finest_hours(low_min, high_min):
 
 
 def _finest_money(low_min, high_min, hourly_cost):
-    """`low_min`/`high_min` (raw, unrounded minutes) turned into dollars at
-    the fewest decimal places that still keep the two ends apart -- the
-    money twin of `_finest_hours`.
+    """`low_min`/`high_min` (raw, unrounded minutes) turned into dollars.
 
-    The review that found this bug traced it exactly: `money_low`/
+    The review that found the original bug traced it exactly: `money_low`/
     `money_high` were built from `saved_low`/`saved_high`, the tenth-of-an-
     hour-rounded display figures, so a step small enough to round both ends
     to the same tenth of an hour rounded both ends of its money to the same
     whole dollar too -- issue #1's collapse again, wearing a dollar sign.
-    The fix is the same shape as `_finest_hours`: start from the raw claim,
-    in dollars, and escalate past whole dollars into cents and beyond
-    rather than rounding a figure that already lost the difference. Whole
-    dollars first, since that is what an owner reads a rate in.
+    The fix is the same shape as `_finest_hours`: start from the raw claim
+    in dollars, unrounded, rather than a figure that already lost the
+    difference. `low_min < high_min` is guaranteed by the time this is
+    called (see `_step_analysis`), so these two floats are always distinct
+    -- an API/JSON consumer reading `money_low`/`money_high` numerically
+    never sees a false collapse. `_money_range` below is what turns this
+    pair into the two currency *strings* a client reads; the escalating
+    ladder of decimal places a first attempt at this used has moved there,
+    because whole dollars and a fraction of a cent are display concerns,
+    not the value itself.
     """
-    low_amt, high_amt = low_min / 60.0 * hourly_cost, high_min / 60.0 * hourly_cost
-    for places in (0, 2, 3, 4, 5, 6):
-        lo, hi = _round(low_amt, places), _round(high_amt, places)
-        if hi > lo:
-            return lo, hi
-    return _round(low_amt, 6), _round(high_amt, 6)
+    return low_min / 60.0 * hourly_cost, high_min / 60.0 * hourly_cost
+
+
+def _money_text(amount):
+    """One dollar amount as a client reads currency: whole dollars when it
+    is one, otherwise exactly two decimal places -- never `$0.3`, never a
+    fraction of a cent. `_money_range` below has already floored/ceilinged
+    `amount` to whichever of those two granularities the pair is being
+    shown at, so this only has to pick the right number of decimals for a
+    number that already lands on one.
+    """
+    if amount <= 0:
+        return "$0"
+    if amount < 0.01:
+        return "under $0.01"
+    if abs(amount - round(amount)) < 1e-9:
+        return "$%d" % round(amount)
+    return "$%.2f" % amount
+
+
+def _money_range(low_amt, high_amt):
+    """`low_amt`/`high_amt` (raw, unrounded dollars, `low_amt <= high_amt`)
+    as the two strings a client reads for that range.
+
+    The bug this closes: rounding each end independently (to a whole
+    dollar, or to cents) can land two genuinely different amounts on the
+    same displayed figure -- $0.026 and $0.034 both round to $0.03. Floor
+    the low end and ceil the high end instead, at whichever granularity
+    (whole dollars, or cents) the pair is being shown at, the same
+    floor/ceil trick `_percent_span` already uses for percentages: that
+    pair can only land on the same number if `low_amt >= high_amt` to
+    start with, so a real difference can never round itself away. Below a
+    cent there is no granularity left to floor and ceil at all -- nothing
+    here costs a fraction of a cent, so that range says so instead of
+    printing two numbers nobody could act on.
+    """
+    if high_amt <= 0:
+        return "$0", "$0"
+    if high_amt < 0.01:
+        return ("$0" if low_amt <= 0 else "under $0.01"), "under $0.01"
+    if high_amt >= 1:
+        lo, hi = math.floor(low_amt), math.ceil(high_amt)
+    else:
+        lo, hi = math.floor(low_amt * 100) / 100.0, math.ceil(high_amt * 100) / 100.0
+    return _money_text(lo), _money_text(hi)
 
 
 def _step_analysis(step, hourly_cost):
@@ -426,19 +469,41 @@ def _step_analysis(step, hourly_cost):
         # the tenth-of-an-hour display figures those round to. A step small
         # enough for both hours to round to the same tenth rounded both
         # dollar figures to the same whole dollar too, which is this issue's
-        # collapse again, wearing a dollar sign. `_finest_money` escalates
-        # past whole dollars into cents (and further) the same way
-        # `_finest_range` escalates past hours into minutes, so a real range
-        # never prints as $X–$X. `addressable` -- already built the same
-        # way, for the same claim -- is reused for the hours phrase so the
-        # money line never states a different figure than the line above it.
+        # collapse again, wearing a dollar sign. `_finest_money` returns the
+        # raw claim in dollars, unrounded and therefore always distinct
+        # between low and high, for any API/JSON consumer of `money_low`/
+        # `money_high`; `_money_range` turns that pair into the two
+        # currency strings a client reads, floored/ceiled so a real
+        # difference never rounds itself away either.
         money_low, money_high = _finest_money(claim_low_min, claim_high_min, hourly_cost)
         out["money_low"] = money_low
         out["money_high"] = money_high
-        out["money_how"] = (
-            "%s × $%s an hour = $%s–$%s a month"
-            % (addressable, _round(hourly_cost, 0), money_low, money_high)
-        )
+        money_low_disp, money_high_disp = _money_range(money_low, money_high)
+        rate_disp = _round(hourly_cost, 0)
+        if addressable.endswith("hrs"):
+            # `addressable` is already in hours here, so multiplying it by
+            # the rate is the equation it looks like -- unchanged from
+            # before this fix, because there is nothing dimensionally wrong
+            # to correct.
+            out["money_how"] = (
+                "%s × $%s an hour = %s–%s a month"
+                % (addressable, rate_disp, money_low_disp, money_high_disp)
+            )
+        else:
+            # `addressable` renders in minutes or seconds here, and an
+            # hourly rate only multiplies against hours -- stating
+            # "0.4 min × $50 an hour" implies an equation that doesn't
+            # compute (0.4 x 50 != the money shown). Show the hours the
+            # rate actually multiplies, alongside the finer-precision time
+            # already on the line above this one, so the sentence is an
+            # equation a business owner could check rather than a false one.
+            hrs_low = _round(claim_low_min / 60.0, 4)
+            hrs_high = _round(claim_high_min / 60.0, 4)
+            out["money_how"] = (
+                "%s a month (%s–%s hrs) × $%s an hour ≈ %s–%s a month"
+                % (addressable, hrs_low, hrs_high, rate_disp,
+                   money_low_disp, money_high_disp)
+            )
     return out
 
 

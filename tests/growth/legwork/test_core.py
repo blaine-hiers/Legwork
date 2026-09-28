@@ -325,6 +325,201 @@ class Money(unittest.TestCase):
         self.assertIn(row["addressable"], row["money_how"])
 
 
+# Every dollar figure `money_how` can state, matched as a whole token so
+# "under $0.01" isn't split on its own space. Used below to pull the
+# equation's stated hours and its stated money apart and check one against
+# the other, and to check every currency figure's own decimal count.
+_MONEY_TOKEN = r"(?:under \$0\.01|\$0|\$\d+(?:\.\d+)?)"
+_MONEY_EQUATION = re.compile(
+    r"\(?([\d.]+)–([\d.]+) hrs\)? × \$(\d+) an hour [=≈] "
+    r"(%s)–(%s) a month" % (_MONEY_TOKEN, _MONEY_TOKEN)
+)
+
+
+def _money_amount(token):
+    """A `money_how` currency token as a float, or `None` for the "under a
+    cent" text, which has no single number to check arithmetic against."""
+    return None if token.startswith("under") else float(token.lstrip("$") or 0)
+
+
+class MoneyHowEquation(unittest.TestCase):
+    """Review finding 1: `money_how` stated `addressable` (which can be in
+    minutes or seconds) multiplied by an hourly rate, which is dimensionally
+    wrong -- an hourly rate only multiplies hours. Every case here checks
+    the sentence a business owner would actually try to verify: the hours
+    figure it states, times the rate it states, comes out to the money it
+    states, within the rounding the sentence itself is doing."""
+
+    def _check_equation(self, how, case=""):
+        m = _MONEY_EQUATION.search(how)
+        self.assertIsNotNone(m, "%s: no equation found in %r" % (case, how))
+        hrs_low, hrs_high, rate, money_low_s, money_high_s = m.groups()
+        rate = float(rate)
+        for hrs, money_s in ((hrs_low, money_low_s), (hrs_high, money_high_s)):
+            amount = _money_amount(money_s)
+            if amount is None:
+                continue    # "under $0.01" -- nothing numeric to check
+            calc = float(hrs) * rate
+            self.assertLess(
+                abs(calc - amount), max(0.02, 0.5 * amount),
+                "%s: %s hrs × $%s ≈ $%.4f calculated, but %r shown in %r"
+                % (case, hrs, rate, calc, money_s, how),
+            )
+
+    def test_equation_checks_out_when_addressable_is_minutes(self):
+        """The review's own repro: was '0–0.4 min × $50 an hour = $0–$0.3 a
+        month' -- 0.4 × 50 = 20, nowhere near $0.30."""
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertTrue(row["addressable"].endswith("min"), row["addressable"])
+        self._check_equation(row["money_how"])
+
+    def test_equation_checks_out_when_addressable_is_seconds(self):
+        """The review's second repro: was '9–12 sec × $40 an hour = $0.11–
+        $0.14 a month' -- 12 × 40 = 480, nowhere near $0.14."""
+        doc = {"name": "T", "hourly_cost": 40, "steps": [
+            {"id": "s1", "name": "s", "minutes": 0.5,
+             "runs_per_month": 0.5, "handling": ["chased"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertTrue(row["addressable"].endswith("sec"), row["addressable"])
+        self._check_equation(row["money_how"])
+
+    def test_equation_still_checks_out_when_addressable_is_already_hours(self):
+        """When a step's claim is large enough that `addressable` stays in
+        hours, the equation was always correct -- this fix must not touch
+        that case (`04`)."""
+        doc = sheet(["retyped"], hourly_cost=45)   # 30 min x 10 runs/month
+        row = core.analyze(doc)["steps"][0]
+        self.assertTrue(row["addressable"].endswith("hrs"), row["addressable"])
+        self._check_equation(row["money_how"])
+
+    def test_time_phrase_in_the_equation_matches_the_addressable_line_above_it(self):
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertIn(row["addressable"], row["money_how"])
+
+
+class MoneyCurrencyFormat(unittest.TestCase):
+    """Review finding 2: `_finest_money`'s escalation ladder could print a
+    fraction of a cent ("$0.026–$0.034") or a one-decimal dollar figure
+    ("$0.3") -- neither of which is a currency figure a business owner can
+    act on. Every dollar figure shown must have 0 or exactly 2 decimals,
+    or say "under $0.01" when there's truly less than a cent to show."""
+
+    def _every_currency_token_is_well_formed(self, text, case=""):
+        for m in re.finditer(r"\$(\d+(?:\.\d+)?)", text):
+            if "." in m.group(1):
+                places = m.group(1).split(".")[1]
+                self.assertEqual(
+                    len(places), 2,
+                    "%s: %r has %d decimal places in %r"
+                    % (case, m.group(0), len(places), text),
+                )
+
+    def test_a_two_to_four_cent_range_still_renders_as_real_cents(self):
+        """The review's own repro (minutes=0.5, runs=0.5, $10/hr, "chased")
+        gave money_low=0.026, money_high=0.034 -- 2.6 to 3.4 cents, i.e.
+        *above* a cent, just formatted with too many decimal places
+        ('$0.026-$0.034'). That range must still read as real cents, not
+        collapse to the same figure and not fall back to "under a cent"
+        (which is reserved for amounts that truly haven't reached one)."""
+        doc = {"name": "T", "hourly_cost": 10, "steps": [
+            {"id": "s1", "name": "s", "minutes": 0.5,
+             "runs_per_month": 0.5, "handling": ["chased"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertNotIn("under $0.01", row["money_how"])
+        self.assertNotEqual(row["money_low"], row["money_high"])
+        self._every_currency_token_is_well_formed(row["money_how"])
+
+    def test_an_amount_under_a_cent_says_so_instead_of_a_fraction_of_one(self):
+        """A step small enough that even the high end is worth less than a
+        cent (minutes=0.5, runs=0.5, $1/hr, "decided") renders "under
+        $0.01" instead of a sub-cent figure nobody could act on."""
+        doc = {"name": "T", "hourly_cost": 1, "steps": [
+            {"id": "s1", "name": "s", "minutes": 0.5,
+             "runs_per_month": 0.5, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertLess(row["money_high"], 0.01)
+        self.assertIn("under $0.01", row["money_how"])
+        self._every_currency_token_is_well_formed(row["money_how"])
+
+    def test_thirty_cents_renders_with_two_decimals_not_one(self):
+        """The review's own repro: was '$0.3' instead of '$0.30'."""
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertIn("$0.30", row["money_how"])
+        self.assertNotIn("$0.3 ", row["money_how"])
+        self._every_currency_token_is_well_formed(row["money_how"])
+
+    def test_zero_stays_a_bare_dollar_zero(self):
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertEqual(row["money_low"], 0.0)
+        self.assertIn("$0–", row["money_how"])
+
+    def test_money_low_and_high_stay_plain_numbers_for_api_consumers(self):
+        """`money_low`/`money_high` are read directly by `/api/analyze` and
+        the export routes, not just quoted in `money_how` -- they must stay
+        numeric even in the "under a cent" case, never the display string."""
+        doc = {"name": "T", "hourly_cost": 1, "steps": [
+            {"id": "s1", "name": "s", "minutes": 0.5,
+             "runs_per_month": 0.5, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertLess(row["money_high"], 0.01)     # the "under $0.01" case
+        self.assertIsInstance(row["money_low"], float)
+        self.assertIsInstance(row["money_high"], float)
+        self.assertLess(row["money_low"], row["money_high"])
+
+    def test_a_sweep_of_minutes_runs_and_rates_never_breaks_the_money_figure(self):
+        """The sweep both review findings were checked against: minutes x
+        runs_per_month x hourly_cost. No malformed currency and no numeric
+        collapse anywhere in the grid; the stated equation checks out
+        whenever `addressable` is in minutes or seconds -- the dimensional
+        fix this review asked for. The hours tier is excluded from the
+        equation check on purpose: it multiplies a figure `_hours()` has
+        already rounded to a tenth of an hour against the raw, unrounded
+        money claim, the same as it did before this fix (out of scope --
+        "when addressable is already in hours, keep today's output
+        unchanged") and that tenth-of-an-hour rounding can outweigh a small
+        claim's own money figure, which is a pre-existing display-precision
+        quirk, not the collapse or the dimensional error this review is
+        about."""
+        checker = MoneyHowEquation()
+        for minutes in (0.5, 1, 2, 3, 5, 30, 60):
+            for runs in (0.5, 1, 2, 20, 200):
+                for rate in (10, 40, 50, 120):
+                    doc = {"name": "T", "hourly_cost": rate, "steps": [
+                        {"id": "s1", "name": "s", "minutes": minutes,
+                         "runs_per_month": runs, "handling": ["decided"]},
+                    ]}
+                    row = core.analyze(doc)["steps"][0]
+                    case = "minutes=%s runs=%s rate=%s" % (minutes, runs, rate)
+                    self.assertLess(row["money_low"], row["money_high"], case)
+                    how = row["money_how"]
+                    self._every_currency_token_is_well_formed(how, case)
+                    if not row["addressable"].endswith("hrs"):
+                        checker._check_equation(how, case)
+                    for text in (core.to_markdown(doc), core.to_text(doc)):
+                        for low, high in rendered_ranges(text):
+                            self.assertNotEqual(low, high, "%s: %s" % (case, text))
+
+
 class TheOnePager(unittest.TestCase):
 
     def setUp(self):
