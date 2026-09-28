@@ -261,6 +261,29 @@ def _finest_hours(low_min, high_min):
     return _round(low_hrs, 6), _round(high_hrs, 6)
 
 
+def _finest_money(low_min, high_min, hourly_cost):
+    """`low_min`/`high_min` (raw, unrounded minutes) turned into dollars at
+    the fewest decimal places that still keep the two ends apart -- the
+    money twin of `_finest_hours`.
+
+    The review that found this bug traced it exactly: `money_low`/
+    `money_high` were built from `saved_low`/`saved_high`, the tenth-of-an-
+    hour-rounded display figures, so a step small enough to round both ends
+    to the same tenth of an hour rounded both ends of its money to the same
+    whole dollar too -- issue #1's collapse again, wearing a dollar sign.
+    The fix is the same shape as `_finest_hours`: start from the raw claim,
+    in dollars, and escalate past whole dollars into cents and beyond
+    rather than rounding a figure that already lost the difference. Whole
+    dollars first, since that is what an owner reads a rate in.
+    """
+    low_amt, high_amt = low_min / 60.0 * hourly_cost, high_min / 60.0 * hourly_cost
+    for places in (0, 2, 3, 4, 5, 6):
+        lo, hi = _round(low_amt, places), _round(high_amt, places)
+        if hi > lo:
+            return lo, hi
+    return _round(low_amt, 6), _round(high_amt, 6)
+
+
 def _step_analysis(step, hourly_cost):
     """One step: what it costs today, and what the patterns would take off it."""
     per_run = step["minutes"]
@@ -397,12 +420,24 @@ def _step_analysis(step, hourly_cost):
         # applied to the other missing input: a rate times an hours figure
         # that doesn't exist yet is still a made-up number, just wearing a
         # clock face instead of a dollar sign.
-        out["money_low"] = _round(saved_low * hourly_cost, 0)
-        out["money_high"] = _round(saved_high * hourly_cost, 0)
+        #
+        # issue #1, money path: built from `claim_low_min`/`claim_high_min`
+        # -- the raw, unrounded claim -- rather than `saved_low`/`saved_high`,
+        # the tenth-of-an-hour display figures those round to. A step small
+        # enough for both hours to round to the same tenth rounded both
+        # dollar figures to the same whole dollar too, which is this issue's
+        # collapse again, wearing a dollar sign. `_finest_money` escalates
+        # past whole dollars into cents (and further) the same way
+        # `_finest_range` escalates past hours into minutes, so a real range
+        # never prints as $X–$X. `addressable` -- already built the same
+        # way, for the same claim -- is reused for the hours phrase so the
+        # money line never states a different figure than the line above it.
+        money_low, money_high = _finest_money(claim_low_min, claim_high_min, hourly_cost)
+        out["money_low"] = money_low
+        out["money_high"] = money_high
         out["money_how"] = (
-            "%s–%s hrs × $%s an hour = $%s–$%s a month"
-            % (saved_low, saved_high, _round(hourly_cost, 0),
-               _round(saved_low * hourly_cost, 0), _round(saved_high * hourly_cost, 0))
+            "%s × $%s an hour = $%s–$%s a month"
+            % (addressable, _round(hourly_cost, 0), money_low, money_high)
         )
     return out
 

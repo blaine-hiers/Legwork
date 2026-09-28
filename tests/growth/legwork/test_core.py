@@ -277,6 +277,53 @@ class Money(unittest.TestCase):
         self.assertIn("$45", row["money_how"])
         self.assertIn("–", row["money_how"])
 
+    def test_a_small_real_quantity_does_not_collapse_the_money_figure(self):
+        """The PR review's own repro: 2 minutes, run once a month, $50/hr.
+        The step's hours already stay a real range via `_finest_range` --
+        this is the money figure computed from the same coarse
+        `saved_low`/`saved_high` `_hours()` rounds to, which was never
+        wired up to the escalated-precision fix."""
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        a = core.analyze(doc)
+        row = a["steps"][0]
+        self.assertEqual((row["saved_low"], row["saved_high"]), (0, 0))
+        self.assertNotEqual(row["money_low"], row["money_high"])
+        for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+            self.assertNotIn("$0–$0 ", text)
+            for low, high in rendered_ranges(text):
+                self.assertNotEqual(low, high, text)
+
+    def test_a_sweep_of_small_quantities_never_collapses_the_money_figure(self):
+        """The reviewer's own sweep: minutes in {0.5,1,2,3,5} × runs_per_month
+        in {0.5,1,2} at $40/hr collapsed money in 14/15 combinations before
+        this fix."""
+        for minutes in (0.5, 1, 2, 3, 5):
+            for runs in (0.5, 1, 2):
+                doc = {"name": "T", "hourly_cost": 40, "steps": [
+                    {"id": "s1", "name": "s", "minutes": minutes,
+                     "runs_per_month": runs, "handling": ["decided"]},
+                ]}
+                a = core.analyze(doc)
+                row = a["steps"][0]
+                case = "minutes=%s runs=%s" % (minutes, runs)
+                self.assertNotEqual(row["money_low"], row["money_high"], case)
+                for text in (core.to_markdown(doc, a), core.to_text(doc, a)):
+                    for low, high in rendered_ranges(text):
+                        self.assertNotEqual(low, high, "%s: %s" % (case, text))
+
+    def test_money_how_states_the_same_hours_as_the_addressable_line(self):
+        """The money sentence must not quote a different hours figure than
+        the one shown a couple of lines above it for the same step."""
+        doc = {"name": "T", "hourly_cost": 50, "steps": [
+            {"id": "s1", "name": "Tiny rare step", "minutes": 2,
+             "runs_per_month": 1, "handling": ["decided"]},
+        ]}
+        row = core.analyze(doc)["steps"][0]
+        self.assertIn(row["addressable"], row["money_how"])
+
 
 class TheOnePager(unittest.TestCase):
 
