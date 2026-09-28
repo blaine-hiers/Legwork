@@ -348,6 +348,19 @@
       text: "Hand-time coming off the work — not a person freed up and not money " +
             "in the bank. Two steps done by the same person do not free two people." }));
 
+    var r = $("#byRole");
+    UI.clear(r);
+    if (!a.by_role || !a.by_role.length) {
+      r.appendChild(el("span", { text: "Nothing described yet." }));
+    } else {
+      a.by_role.forEach(function (role) {
+        r.appendChild(el("div", { class: "workline",
+          text: role.who + ": " + role.hours_text + " hrs/mo (" + role.share + "%)" }));
+        r.appendChild(el("div", { class: "arith",
+          text: role.money_how || role.rate_how || role.addressable }));
+      });
+    }
+
     var f = $("#firstOut");
     UI.clear(f);
     if (a.first) {

@@ -59,6 +59,23 @@ def rendered_ranges(text):
     return out
 
 
+
+def tenths(hours):
+    """Hours as whole tenths -- the grid every hours figure is shown on."""
+    return int(round(hours * 10))
+
+
+def assert_roles_reconcile(test, a, case):
+    """The by-role invariant: each role shows a clean one-decimal, non-negative
+    figure, the roles' tenths add up to the total's tenths exactly, and so the
+    displayed role hours sum to the displayed total at that one decimal."""
+    hours = [r["hours_month"] for r in a["by_role"]]
+    for h in hours:
+        test.assertGreaterEqual(h, 0, case)
+        test.assertEqual(h, round(h, 1), "%s: %r" % (case, h))
+    test.assertEqual(sum(tenths(h) for h in hours), tenths(a["totals"]["hours_month"]), case)
+    test.assertEqual(round(sum(hours), 1), a["totals"]["hours_month"], case)
+
 class TheRangeRule(unittest.TestCase):
 
     def test_no_step_can_ever_report_a_single_figure(self):
@@ -674,6 +691,239 @@ class ComingFromTheMapper(unittest.TestCase):
         for bad in ({}, {"format": "something-else", "v": 1}, "not a dict"):
             with self.assertRaises(ValueError):
                 core.from_flowmap(bad)
+
+
+class ByRole(unittest.TestCase):
+    """`analyze()["by_role"]` groups the same per-step rows `totals` sums
+    from, by `who` -- a step with no `who` lands in an explicit "not said"
+    bucket rather than disappearing into it. Because a role's hours are
+    exactly the rows that belong to it, summing every role's hours must
+    reproduce `totals.hours_month`, by construction, for any sheet."""
+
+    def _doc(self, steps, hourly_cost=0, role_rates=None):
+        return {
+            "name": "T", "hourly_cost": hourly_cost,
+            "role_rates": role_rates or {},
+            "steps": [
+                {"id": "s%d" % i, "name": "Step %d" % i, "who": who,
+                 "minutes": minutes, "runs_per_month": runs, "handling": handling}
+                for i, (who, minutes, runs, handling) in enumerate(steps)
+            ],
+        }
+
+    def test_no_rates_at_all_still_rolls_up_hours_and_share(self):
+        doc = self._doc([
+            ("Front office", 30, 10, ["retyped"]),
+            ("Technician", 60, 10, ["chased"]),
+        ])
+        a = core.analyze(doc)
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertEqual(set(by_who), {"Front office", "Technician"})
+        self.assertEqual(by_who["Front office"]["hours_month"], 5.0)
+        self.assertEqual(by_who["Technician"]["hours_month"], 10.0)
+        self.assertEqual(by_who["Front office"]["share"], 33)
+        self.assertEqual(by_who["Technician"]["share"], 67)
+
+    def test_a_rated_role_and_an_unrated_role_are_labelled_differently(self):
+        """The role with a stated rate names it as its own; the role
+        without one still prices at `hourly_cost`, but its line says so
+        plainly -- never presented as a rate for that role."""
+        doc = self._doc([
+            ("Front office", 30, 10, ["retyped"]),
+            ("Technician", 60, 10, ["chased"]),
+        ], hourly_cost=22, role_rates={"Technician": 95})
+        a = core.analyze(doc)
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertTrue(by_who["Technician"]["has_own_rate"])
+        self.assertIn("$95", by_who["Technician"]["money_how"])
+        self.assertNotIn("blended", by_who["Technician"]["money_how"])
+        self.assertFalse(by_who["Front office"]["has_own_rate"])
+        self.assertIn("$22", by_who["Front office"]["money_how"])
+        self.assertIn("blended", by_who["Front office"]["money_how"])
+
+    def test_every_role_rated_names_its_own_rate(self):
+        doc = self._doc([
+            ("Front office", 30, 10, ["retyped"]),
+            ("Technician", 60, 10, ["chased"]),
+        ], role_rates={"Front office": 22, "Technician": 95})
+        a = core.analyze(doc)
+        for r in a["by_role"]:
+            self.assertTrue(r["has_own_rate"], r["who"])
+            self.assertNotIn("blended", r["money_how"])
+
+    def test_a_step_with_no_who_lands_in_an_explicit_not_said_bucket(self):
+        doc = self._doc([
+            ("Front office", 30, 10, ["retyped"]),
+            ("", 20, 10, ["chased"]),
+        ])
+        a = core.analyze(doc)
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertIn("not said", by_who)
+        self.assertGreater(by_who["not said"]["hours_month"], 0)
+
+    def test_a_literal_role_named_not_said_cannot_collide_with_the_bucket(self):
+        """The exact repro: a step with a blank `who` (the bucket) and a
+        step whose `who` is the literal string "not said" (a real role
+        that happens to share the bucket's own label). The two must never
+        render identically -- a dict keyed by `who`, the way every
+        consumer of `by_role` reads it (including the tests above), must
+        end up with both rows, not one silently overwriting the other."""
+        doc = self._doc([
+            ("   ", 30, 10, ["retyped"]),
+            ("not said", 20, 10, ["chased"]),
+        ])
+        a = core.analyze(doc)
+        self.assertEqual(len(a["by_role"]), 2)
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertEqual(len(by_who), 2,
+                         "two distinct by_role rows collapsed to one key: %r"
+                         % [r["who"] for r in a["by_role"]])
+
+        bucket = next(r for r in a["by_role"] if r["not_said"])
+        named = next(r for r in a["by_role"] if not r["not_said"])
+        self.assertNotEqual(bucket["who"], named["who"])
+        self.assertAlmostEqual(bucket["hours_month"], 5.0, places=1)     # 30 min x 10/mo
+        self.assertAlmostEqual(named["hours_month"], 3.3, places=1)      # 20 min x 10/mo
+        assert_roles_reconcile(self, a, "not said repro")
+
+    def test_a_zero_effective_rate_gives_an_hours_only_line(self):
+        doc = self._doc([("Front office", 30, 10, ["retyped"])])   # no rate anywhere
+        a = core.analyze(doc)
+        row = a["by_role"][0]
+        self.assertIsNone(row["money_how"])
+        self.assertIn("stays in hours", row["rate_how"])
+
+    def test_role_rates_never_invent_a_value_for_an_unstated_role(self):
+        doc = self._doc([("Ghost", 30, 10, ["retyped"])],
+                         role_rates={"Someone else": 999})
+        a = core.analyze(doc)
+        row = a["by_role"][0]
+        self.assertFalse(row["has_own_rate"])
+        self.assertIsNone(row["money_how"])
+
+    def test_per_role_hours_sum_to_the_sheet_total_across_a_sweep(self):
+        """The reconciliation invariant, swept across tiny inputs where the
+        old approach (each role's already-rounded hours summed, then that
+        sum rounded again) could drift from `totals.hours_month`, which
+        rounds the grand sum once. `_apportion_tenths` fixes the total
+        first and hands out its tenths, so this now holds with `==`, not
+        `assertAlmostEqual` -- also proving no per-role line ever collapses
+        a range, raises, or shows malformed currency."""
+        currency = MoneyCurrencyFormat()
+        for minutes in (0.01, 0.05, 0.5, 1, 2, 3, 5):
+            for runs in (0.01, 0.1, 1, 5, 20):
+                for rate in (0, 22, 95):
+                    doc = self._doc([
+                        ("Front office", minutes, runs, ["retyped"]),
+                        ("Technician", minutes, runs, ["chased"]),
+                        ("", minutes, runs, []),
+                    ], hourly_cost=rate)
+                    case = "minutes=%s runs=%s rate=%s" % (minutes, runs, rate)
+                    a = core.analyze(doc)
+                    assert_roles_reconcile(self, a, case)
+                    for r in a["by_role"]:
+                        how = r.get("money_how")
+                        if not how:
+                            continue
+                        currency._every_currency_token_is_well_formed(how, case)
+                        for lo, hi in rendered_ranges(how):
+                            self.assertNotEqual(lo, hi, "%s: %s" % (case, how))
+
+    def test_roles_doing_unequal_work_reconcile_and_render_cleanly(self):
+        """Roles with unequal minutes and runs -- the realistic case, and the
+        one where giving the smallest role `total - others` rendered it as
+        0.29999999999999893 or even a negative. Includes the reviewer's two
+        counter-examples plus a seeded random sweep."""
+        import random
+        docs = [
+            self._doc([("Front office", 12, 40, ["retyped"]), ("Technician", 22, 8, ["chased"]),
+                       ("Dispatcher", 4, 5, ["chased"])], hourly_cost=25),
+            self._doc([("Front office", 7.696260118067817, 9.834407365068424, ["retyped"]),
+                       ("Technician", 2.9283609919160654, 8.24741163858587, ["chased"]),
+                       ("", 1.8041962473375583, 1.6781639515135212, [])], hourly_cost=22),
+        ]
+        rng = random.Random(11)
+        for _ in range(400):
+            n = rng.randint(1, 8)
+            docs.append(self._doc([
+                (rng.choice(["Front office", "Technician", "Dispatcher", "", "not said"]),
+                 10 ** rng.uniform(-2, 4), 10 ** rng.uniform(-2, 3),
+                 rng.choice([["retyped"], ["chased"], []]))
+                for _ in range(n)], hourly_cost=rng.choice([0, 22, 95])))
+        for i, doc in enumerate(docs):
+            a = core.analyze(doc)
+            assert_roles_reconcile(self, a, "doc %d" % i)
+            text = core.to_text(doc) if hasattr(core, "to_text") else ""
+            self.assertNotRegex(text, r"\d\.\d{5,}", "doc %d renders float noise" % i)
+
+    def test_many_small_steps_still_count_toward_role_and_sheet_hours(self):
+        """38 steps of 2.9 min run once a month are each under 0.05 hrs, so
+        each rounds to 0.0 on its own. Summing those rounded figures made the
+        sheet total ignore them, and their role showed "0.0 hrs/mo" beside a
+        real $95/hr money line. Totals and role shares now come from raw
+        minutes, so every role's shown hours are within a tenth of its own."""
+        import random
+        steps = [("Front office", 2.9, 1, ["retyped"]) for _ in range(38)]
+        steps.append(("Technician", 120, 10, ["chased"]))
+        a = core.analyze(self._doc(steps, hourly_cost=95))
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertEqual(by_who["Front office"]["hours_month"], round(38 * 2.9 / 60, 1))
+        self.assertEqual(a["totals"]["hours_month"], round((38 * 2.9 + 1200) / 60, 1))
+        assert_roles_reconcile(self, a, "38 small steps")
+
+        rng = random.Random(7)
+        for i in range(300):
+            n = rng.randint(1, core.MAX_STEPS)
+            doc = self._doc([
+                (rng.choice(["Front office", "Technician", "", "Dispatcher"]),
+                 10 ** rng.uniform(-1, 2), 10 ** rng.uniform(-1, 1.5), ["chased"])
+                for _ in range(n)], hourly_cost=95)
+            a = core.analyze(doc)
+            raw = {}
+            for st in a["steps"]:
+                key = st["who"]
+                raw[key] = raw.get(key, 0.0) + st["minutes_month"] / 60.0
+            for r in a["by_role"]:
+                key = "" if r["not_said"] else r["who"]
+                self.assertLess(abs(r["hours_month"] - raw[key]), 0.1 + 1e-9,
+                                "sheet %d role %r" % (i, r["who"]))
+            assert_roles_reconcile(self, a, "sheet %d" % i)
+
+    def test_the_one_pager_never_shows_zero_hour_rows_under_a_real_total(self):
+        """40 steps of 2.99 min run once a month: each rounds to 0.0 hrs, the
+        total rightly says 2. The one-pager's step table used to print every
+        row as "0 hrs/mo" under that headline; a row with real time now reads
+        "under 0.1"."""
+        doc = self._doc([("Front office", 2.99, 1, ["retyped"]) for _ in range(40)], hourly_cost=25)
+        a = core.analyze(doc)
+        self.assertEqual(a["totals"]["hours_month"], 2.0)
+        md = core.to_markdown(doc)
+        self.assertNotIn("| 0.0 hrs/mo |", md)
+        self.assertNotIn("| 0 hrs/mo |", md)
+        self.assertIn("| under 0.1 hrs/mo |", md)
+        self.assertEqual(a["steps"][0]["hours_text"], "under 0.1")
+        # A genuinely empty step still says 0.
+        empty = core.analyze(self._doc([("Front office", 0, 0, [])]))
+        self.assertEqual(empty["steps"][0]["hours_text"], "0")
+
+    def test_per_role_hours_sum_exactly_at_extreme_magnitudes_and_max_steps(self):
+        """The reviewer's own repro: a 34-step sheet at roughly a million
+        minutes/runs found a 3.8e-6 drift under the old approach. Swept
+        here up to `_num`'s own field ceiling (1e9) and at `MAX_STEPS`
+        steps, where the old per-role-then-re-round approach had the most
+        room to disagree with `totals.hours_month`."""
+        roles = ["Front office", "Technician", "Dispatcher", ""]
+        for minutes, runs in ((1_000, 1_000), (1_000_000, 1_000_000),
+                              (1e9, 1e9)):
+            steps = [
+                (roles[i % len(roles)], minutes + i, runs + i, ["chased"])
+                for i in range(core.MAX_STEPS)
+            ]
+            doc = self._doc(steps, hourly_cost=37)
+            case = "minutes=%s runs=%s" % (minutes, runs)
+            a = core.analyze(doc)
+            self.assertEqual(len(a["steps"]), core.MAX_STEPS, case)
+            assert_roles_reconcile(self, a, case)
 
 
 if __name__ == "__main__":

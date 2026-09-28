@@ -157,6 +157,26 @@ class Sheets(unittest.TestCase):
         _, saved = call("PUT", "/api/sheets/" + sheet["id"], sheet)
         self.assertEqual(saved["sheet"]["starter"], "machine-shop-job")
 
+    def test_role_rates_round_trip_through_save_and_feed_the_analysis(self):
+        """`role_rates` has no input on the screen -- it arrives by JSON/
+        import -- but a save must still keep it, and `by_role` must price
+        that role at it, not at the sheet's blended rate."""
+        _, r = call("POST", "/api/sheets", {"starter": "scheduling"})
+        sheet = r["sheet"]
+        sheet["hourly_cost"] = 22
+        sheet["role_rates"] = {"Technician": 95}
+        for step in sheet["steps"]:
+            step["who"] = "Technician"
+            step["runs_per_month"] = 20
+        code, saved = call("PUT", "/api/sheets/" + sheet["id"], sheet)
+        self.assertEqual(code, 200)
+        self.assertEqual(saved["sheet"]["role_rates"], {"Technician": 95})
+        by_who = {row["who"]: row for row in saved["analysis"]["by_role"]}
+        self.assertTrue(by_who["Technician"]["has_own_rate"])
+        self.assertIn("$95", by_who["Technician"]["money_how"])
+        _, back = call("GET", "/api/sheets/" + sheet["id"])
+        self.assertEqual(back["sheet"]["role_rates"], {"Technician": 95})
+
     def test_deleting_twice_is_a_404_not_a_silent_success(self):
         _, r = call("POST", "/api/sheets", {})
         sid = r["sheet"]["id"]

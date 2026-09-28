@@ -65,6 +65,13 @@ def _hours(minutes):
     return _round(minutes / 60.0, 1)
 
 
+def _hours_text(hours, minutes):
+    """`hours` as a reader sees it: "under 0.1" when real time rounds to 0.0
+    at one decimal, so a row of small steps never reads "0 hrs" under a
+    total that (rightly) counts them."""
+    return "under 0.1" if hours == 0 and minutes > 0 else "%s" % hours
+
+
 def _band(hours):
     """Impact 1–5 from hours a month. Bands, not a curve — an owner can check a
     band against their own sense of the place, and cannot check a curve."""
@@ -88,6 +95,7 @@ def blank_demo(name="Untitled"):
         "industry": "",
         "steps": [],
         "hourly_cost": 0.0,     # 0 means "nobody said", and the sheet stays in hours
+        "role_rates": {},       # per-role rate overrides; absent role -> hourly_cost
         "notes": "",
     }
 
@@ -130,6 +138,13 @@ def normalize(doc):
         if len(steps) >= MAX_STEPS:
             break
 
+    raw_role_rates = doc.get("role_rates")
+    role_rates = {}
+    for key, value in (raw_role_rates.items() if isinstance(raw_role_rates, dict) else ()):
+        key = _text(key)
+        if key:
+            role_rates[key] = _num(value)
+
     out = {
         "id": _text(doc.get("id")) or None,
         "name": _text(doc.get("name")) or "Untitled",
@@ -137,6 +152,7 @@ def normalize(doc):
         "industry": _text(doc.get("industry")),
         "notes": _text(doc.get("notes")),
         "hourly_cost": _num(doc.get("hourly_cost")),
+        "role_rates": role_rates,
         "steps": steps,
     }
     for key in ("created", "updated", "starter", "from_map"):
@@ -440,6 +456,10 @@ def _step_analysis(step, hourly_cost):
         "minutes": _round(per_run, 0),
         "runs_per_month": _round(runs, 0),
         "hours_month": _hours(minutes_month),
+        # Unrounded, so sums across steps round once rather than adding up
+        # figures that each already lost up to 0.05 hrs.
+        "minutes_month": minutes_month,
+        "hours_text": _hours_text(_hours(minutes_month), minutes_month),
         "hours_how": "%s min × %s a month ÷ 60 = %s hrs"
                      % (_round(per_run, 0), _round(runs, 0), _hours(minutes_month)),
         "patterns": rows,
@@ -531,12 +551,177 @@ def _step_analysis(step, hourly_cost):
     return out
 
 
+_NOT_SAID_LABEL = "not said"
+
+
+def _apportion_tenths(weights, total_tenths):
+    """Split `total_tenths` integer tenths-of-an-hour across `weights`
+    (any non-negative reals, used only to decide who gets the bigger
+    share) so the parts sum to exactly `total_tenths` -- largest-remainder
+    apportionment, worked in integer tenths so the reconciliation this
+    supports (the roles' tenths sum to `totals.hours_month`'s tenths) is exact
+    integer arithmetic, not a coincidence of how two separately-rounded floats
+    happened to land.
+
+    Rounding each part on its own -- summing several already-rounded
+    per-step hours per role, then rounding *that* sum again -- is exactly
+    the shape of bug this replaces: it can drift from a total that instead
+    rounds the grand sum once, because the two are genuinely different
+    computations, not just float noise. Fixing the whole first and handing
+    out its tenths one at a time can't drift, because there is no second
+    computation of the whole to disagree with -- there is only the one.
+    If every weight is zero the whole still has to land somewhere, so it
+    goes to the first entry; there is no other role to give it to.
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        shares = [0] * n
+        shares[0] = total_tenths
+        return shares
+    raw = [w / total_weight * total_tenths for w in weights]
+    shares = [int(math.floor(x)) for x in raw]
+    remainder = total_tenths - sum(shares)
+    order = sorted(range(n), key=lambda i: raw[i] - shares[i], reverse=True)
+    for i in order[:remainder]:
+        shares[i] += 1
+    return shares
+
+
+def _role_rollup(rows, role_rates, hourly_cost, total_hours_month):
+    """Hand-time rolled up by `who`, grouped from the same per-step `rows`
+    `analyze()` already sums for `totals`.
+
+    Every row lands in exactly one group -- its own `who`, or the "not
+    said" bucket for an empty one. `_apportion_tenths` then splits the
+    already-computed `total_hours_month` across those groups so the parts
+    are guaranteed, by construction, to sum back to it -- see its own
+    docstring for why summing each group's already-rounded hours and
+    rounding *that* sum again (the previous approach here) cannot make
+    the same promise.
+
+    An empty `who` and a role literally named "not said" are different
+    people with different numbers, so they must never render the same
+    label -- a dict keyed by `who`, the way every consumer of this reads
+    it, would silently drop one. `not_said` on the row is the
+    structural marker consumers should key on; the literal role's label
+    is quoted so the two strings can never collide either.
+
+    A role's money never gets a rate this app was not told. `role_rates`
+    holds only the rates an owner actually stated (see `normalize`), so a
+    role missing from it falls back to `hourly_cost` -- the same blended
+    rate every step already used before this rollup existed -- and its
+    line says so, rather than reading as a rate for that role.
+    """
+    groups = {}
+    order = []
+    for r in rows:
+        who = r["who"]
+        if who not in groups:
+            groups[who] = []
+            order.append(who)
+        groups[who].append(r)
+
+    # Raw minutes, not the per-step rounded hours, so each role's apportioned
+    # tenths land within a tenth of its own real hand-time.
+    weights = [sum(r["minutes_month"] for r in groups[who]) for who in order]
+    total_tenths = int(round(total_hours_month * 10))
+    shares_tenths = _apportion_tenths(weights, total_tenths)
+    hours_list = [_round(t / 10.0, 1) for t in shares_tenths]
+
+    # Each role shows its own whole tenths as a one-decimal figure. The
+    # invariant lives in the integers -- the shares sum to `total_tenths`
+    # exactly -- so the displayed role hours always add up to the displayed
+    # total at the one decimal both are shown to. (An earlier attempt made
+    # the float sum bit-exact by giving the smallest role `total - others`;
+    # that only held for one summation order and rendered that role as
+    # float noise, even negative.)
+    out = []
+    for who, share_tenths, hours in zip(order, shares_tenths, hours_list):
+        role_rows = groups[who]
+        is_bucket = not who
+        if is_bucket:
+            label = _NOT_SAID_LABEL
+        elif who == _NOT_SAID_LABEL:
+            # A role that happens to be named exactly the bucket's own
+            # label. Quoted, so the two rows can never read as the same
+            # string and a dict keyed by `who` never loses one of them.
+            label = '"%s"' % who
+        else:
+            label = who
+        share = int(round(hours / total_hours_month * 100)) if total_hours_month > 0 else 0
+
+        scored = [r for r in role_rows if r["patterns"]]
+        claim_low = sum(r["claim_low_min"] for r in scored)
+        claim_high = sum(r["claim_high_min"] for r in scored)
+
+        own_rate = role_rates.get(who, 0.0) if who else 0.0
+        has_own_rate = own_rate > 0
+        rate = own_rate if has_own_rate else hourly_cost
+
+        entry = {
+            "who": label,
+            "not_said": is_bucket,
+            "hours_month": hours,
+            "hours_text": _hours_text(hours, sum(r["minutes_month"] for r in role_rows)),
+            "share": share,
+            "has_own_rate": has_own_rate,
+            "money_how": None,
+        }
+
+        nothing_ticked = not scored
+        pending = bool(scored) and claim_high <= 0
+
+        if nothing_ticked:
+            entry["addressable"] = "not claimed — nothing ticked for %s" % label
+        elif pending:
+            entry["addressable"] = "not sized yet — no volume given"
+        else:
+            entry["addressable"] = _finest_range(claim_low, claim_high)
+            if rate <= 0:
+                entry["rate_how"] = (
+                    "No hourly cost stated for %s, and no blended rate on "
+                    "the sheet either -- this stays in hours, the same "
+                    "rule as the sheet-wide rate." % label
+                )
+            else:
+                money_low, money_high = claim_low / 60.0 * rate, claim_high / 60.0 * rate
+                money_low_disp, money_high_disp = _money_range(money_low, money_high)
+                rate_disp = _round(rate, 0)
+                rate_label = (
+                    "%s's own rate" % label if has_own_rate else
+                    "the sheet's blended rate, not a rate for %s" % label
+                )
+                if entry["addressable"].endswith("hrs"):
+                    entry["money_how"] = (
+                        "%s × $%s an hour (%s) = %s–%s a month"
+                        % (entry["addressable"], rate_disp, rate_label,
+                           money_low_disp, money_high_disp)
+                    )
+                else:
+                    hrs_low, hrs_high = _hours_span(claim_low / 60.0, claim_high / 60.0)
+                    entry["money_how"] = (
+                        "%s a month (%s–%s hrs) × $%s an hour (%s) ≈ %s–%s a month"
+                        % (entry["addressable"], hrs_low, hrs_high, rate_disp,
+                           rate_label, money_low_disp, money_high_disp)
+                    )
+        out.append(entry)
+    return out
+
+
 def analyze(doc):
     m = normalize(doc)
     rate = m["hourly_cost"]
     rows = [_step_analysis(s, rate) for s in m["steps"]]
 
-    total_hours = sum(r["hours_month"] for r in rows)
+    # Sum the raw minutes and round once. Summing each step's already-rounded
+    # hours dropped every step under 0.05 hrs to nothing, so a sheet of many
+    # small steps under-reported its total -- and `by_role`, which splits
+    # this total, showed "0.0 hrs" beside that same role's real money line.
+    total_hours = sum(r["minutes_month"] for r in rows) / 60.0
+    total_hours_month = _round(total_hours, 1)
 
     scored = [r for r in rows if r["patterns"]]
     scored.sort(key=lambda r: (-r["priority"], -r["saved_high"], r["name"]))
@@ -617,9 +802,10 @@ def analyze(doc):
 
     return {
         "steps": rows,
+        "by_role": _role_rollup(rows, m["role_rates"], rate, total_hours_month),
         "totals": {
             "steps": len(rows),
-            "hours_month": _round(total_hours, 1),
+            "hours_month": total_hours_month,
             "saved_low": low,
             "saved_high": high,
             "pending": totals_pending,
@@ -711,7 +897,7 @@ def to_markdown(doc, analysis=None):
         out.append("")
         out.append("**%s**" % f["name"])
         out.append("")
-        out.append("- Takes %s hours a month today (%s)" % (f["hours_month"], f["hours_how"]))
+        out.append("- Takes %s hours a month today (%s)" % (f["hours_text"], f["hours_how"]))
         if f["quantity_pending"]:
             out.append("- Addressable: **not sized yet** — no volume given for this step")
         else:
@@ -741,11 +927,26 @@ def to_markdown(doc, analysis=None):
         out.append("| %s | %s | %s hrs/mo | %s | %s |" % (
             r["name"].replace("|", "/"),
             (r["who"] or "—").replace("|", "/"),
-            r["hours_month"],
+            r["hours_text"],
             addressable_cell,
             r["priority_how"] or "nothing ticked",
         ))
     out.append("")
+
+    if a["by_role"]:
+        out.append("## By who does it")
+        out.append("")
+        out.append("| Who | Hours/mo | Share | In money |")
+        out.append("|---|---|---|---|")
+        for role in a["by_role"]:
+            money_cell = role["money_how"] or role.get("rate_how") or role["addressable"]
+            out.append("| %s | %s | %d%% | %s |" % (
+                role["who"].replace("|", "/"),
+                role["hours_text"],
+                role["share"],
+                money_cell.replace("|", "/"),
+            ))
+        out.append("")
 
     if a["warnings"]:
         out.append("## What this sheet does not cover")
@@ -793,6 +994,14 @@ def to_text(doc, analysis=None):
         for p in f["patterns"]:
             lines.append("  - %s: %s" % (p["title"], p["becomes"]))
             lines.append("    %s" % p["how"])
+        lines.append("")
+    if a["by_role"]:
+        lines.append("BY WHO DOES IT:")
+        for role in a["by_role"]:
+            lines.append("  %s: %s hrs/mo (%d%%)"
+                         % (role["who"], role["hours_text"], role["share"]))
+            note = role["money_how"] or role.get("rate_how") or role["addressable"]
+            lines.append("    %s" % note)
         lines.append("")
     for w in a["warnings"]:
         lines.append("* %s" % w)
