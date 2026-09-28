@@ -449,6 +449,9 @@ def _step_analysis(step, hourly_cost):
         "minutes": _round(per_run, 0),
         "runs_per_month": _round(runs, 0),
         "hours_month": _hours(minutes_month),
+        # Unrounded, so sums across steps round once rather than adding up
+        # figures that each already lost up to 0.05 hrs.
+        "minutes_month": minutes_month,
         "hours_how": "%s min × %s a month ÷ 60 = %s hrs"
                      % (_round(per_run, 0), _round(runs, 0), _hours(minutes_month)),
         "patterns": rows,
@@ -613,7 +616,9 @@ def _role_rollup(rows, role_rates, hourly_cost, total_hours_month):
             order.append(who)
         groups[who].append(r)
 
-    weights = [sum(r["hours_month"] for r in groups[who]) for who in order]
+    # Raw minutes, not the per-step rounded hours, so each role's apportioned
+    # tenths land within a tenth of its own real hand-time.
+    weights = [sum(r["minutes_month"] for r in groups[who]) for who in order]
     total_tenths = int(round(total_hours_month * 10))
     shares_tenths = _apportion_tenths(weights, total_tenths)
     hours_list = [_round(t / 10.0, 1) for t in shares_tenths]
@@ -702,7 +707,11 @@ def analyze(doc):
     rate = m["hourly_cost"]
     rows = [_step_analysis(s, rate) for s in m["steps"]]
 
-    total_hours = sum(r["hours_month"] for r in rows)
+    # Sum the raw minutes and round once. Summing each step's already-rounded
+    # hours dropped every step under 0.05 hrs to nothing, so a sheet of many
+    # small steps under-reported its total -- and `by_role`, which splits
+    # this total, showed "0.0 hrs" beside that same role's real money line.
+    total_hours = sum(r["minutes_month"] for r in rows) / 60.0
     total_hours_month = _round(total_hours, 1)
 
     scored = [r for r in rows if r["patterns"]]

@@ -856,6 +856,39 @@ class ByRole(unittest.TestCase):
             text = core.to_text(doc) if hasattr(core, "to_text") else ""
             self.assertNotRegex(text, r"\d\.\d{5,}", "doc %d renders float noise" % i)
 
+    def test_many_small_steps_still_count_toward_role_and_sheet_hours(self):
+        """38 steps of 2.9 min run once a month are each under 0.05 hrs, so
+        each rounds to 0.0 on its own. Summing those rounded figures made the
+        sheet total ignore them, and their role showed "0.0 hrs/mo" beside a
+        real $95/hr money line. Totals and role shares now come from raw
+        minutes, so every role's shown hours are within a tenth of its own."""
+        import random
+        steps = [("Front office", 2.9, 1, ["retyped"]) for _ in range(38)]
+        steps.append(("Technician", 120, 10, ["chased"]))
+        a = core.analyze(self._doc(steps, hourly_cost=95))
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertEqual(by_who["Front office"]["hours_month"], round(38 * 2.9 / 60, 1))
+        self.assertEqual(a["totals"]["hours_month"], round((38 * 2.9 + 1200) / 60, 1))
+        assert_roles_reconcile(self, a, "38 small steps")
+
+        rng = random.Random(7)
+        for i in range(300):
+            n = rng.randint(1, core.MAX_STEPS)
+            doc = self._doc([
+                (rng.choice(["Front office", "Technician", "", "Dispatcher"]),
+                 10 ** rng.uniform(-1, 2), 10 ** rng.uniform(-1, 1.5), ["chased"])
+                for _ in range(n)], hourly_cost=95)
+            a = core.analyze(doc)
+            raw = {}
+            for st in a["steps"]:
+                key = st["who"]
+                raw[key] = raw.get(key, 0.0) + st["minutes_month"] / 60.0
+            for r in a["by_role"]:
+                key = "" if r["not_said"] else r["who"]
+                self.assertLess(abs(r["hours_month"] - raw[key]), 0.1 + 1e-9,
+                                "sheet %d role %r" % (i, r["who"]))
+            assert_roles_reconcile(self, a, "sheet %d" % i)
+
     def test_per_role_hours_sum_exactly_at_extreme_magnitudes_and_max_steps(self):
         """The reviewer's own repro: a 34-step sheet at roughly a million
         minutes/runs found a 3.8e-6 drift under the old approach. Swept
