@@ -96,6 +96,20 @@ class Extraction(unittest.TestCase):
         r = demo.extract("We have patients Monday so we need somebody out Friday.")
         self.assertEqual(value(r, "when"), "Friday")
 
+    def test_a_slashed_date_with_an_out_of_range_day_is_unreadable(self):
+        r = demo.extract("When they want it: 12/45/9999, found via a slashed date")
+        self.assertIsNone(value(r, "when"))
+        self.assertIn("when", missed_keys(r))
+
+    def test_a_slashed_date_with_an_out_of_range_month_is_unreadable(self):
+        r = demo.extract("Book for 13/13.")
+        self.assertIsNone(value(r, "when"))
+        self.assertIn("when", missed_keys(r))
+
+    def test_a_valid_boundary_slashed_date_still_works(self):
+        r = demo.extract("Need it by 12/31.")
+        self.assertEqual(value(r, "when"), "12/31")
+
     def test_nothing_pasted_in_produces_all_misses_and_no_crash(self):
         r = demo.extract("")
         self.assertEqual(r["found"], [])
