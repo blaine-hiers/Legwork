@@ -540,15 +540,63 @@ def _step_analysis(step, hourly_cost):
     return out
 
 
-def _role_rollup(rows, role_rates, hourly_cost):
+_NOT_SAID_LABEL = "not said"
+
+
+def _apportion_tenths(weights, total_tenths):
+    """Split `total_tenths` integer tenths-of-an-hour across `weights`
+    (any non-negative reals, used only to decide who gets the bigger
+    share) so the parts sum to exactly `total_tenths` -- largest-remainder
+    apportionment, worked in integer tenths so the reconciliation this
+    supports (`sum(role hours) == totals.hours_month`) is exact integer
+    arithmetic, not a coincidence of how two separately-rounded floats
+    happened to land.
+
+    Rounding each part on its own -- summing several already-rounded
+    per-step hours per role, then rounding *that* sum again -- is exactly
+    the shape of bug this replaces: it can drift from a total that instead
+    rounds the grand sum once, because the two are genuinely different
+    computations, not just float noise. Fixing the whole first and handing
+    out its tenths one at a time can't drift, because there is no second
+    computation of the whole to disagree with -- there is only the one.
+    If every weight is zero the whole still has to land somewhere, so it
+    goes to the first entry; there is no other role to give it to.
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        shares = [0] * n
+        shares[0] = total_tenths
+        return shares
+    raw = [w / total_weight * total_tenths for w in weights]
+    shares = [int(math.floor(x)) for x in raw]
+    remainder = total_tenths - sum(shares)
+    order = sorted(range(n), key=lambda i: raw[i] - shares[i], reverse=True)
+    for i in order[:remainder]:
+        shares[i] += 1
+    return shares
+
+
+def _role_rollup(rows, role_rates, hourly_cost, total_hours_month):
     """Hand-time rolled up by `who`, grouped from the same per-step `rows`
     `analyze()` already sums for `totals`.
 
     Every row lands in exactly one group -- its own `who`, or the "not
-    said" bucket for an empty one -- so summing every group's hours
-    reproduces `totals.hours_month` by construction: the parts are a
-    partition of the same numbers the whole already sums, never a second,
-    separate calculation that could drift from it.
+    said" bucket for an empty one. `_apportion_tenths` then splits the
+    already-computed `total_hours_month` across those groups so the parts
+    are guaranteed, by construction, to sum back to it -- see its own
+    docstring for why summing each group's already-rounded hours and
+    rounding *that* sum again (the previous approach here) cannot make
+    the same promise.
+
+    An empty `who` and a role literally named "not said" are different
+    people with different numbers, so they must never render the same
+    label -- a dict keyed by `who`, the way every consumer of this reads
+    it, would silently drop one. `not_said` on the row is the
+    structural marker consumers should key on; the literal role's label
+    is quoted so the two strings can never collide either.
 
     A role's money never gets a rate this app was not told. `role_rates`
     holds only the rates an owner actually stated (see `normalize`), so a
@@ -565,13 +613,45 @@ def _role_rollup(rows, role_rates, hourly_cost):
             order.append(who)
         groups[who].append(r)
 
-    total_hours = sum(r["hours_month"] for r in rows)
+    weights = [sum(r["hours_month"] for r in groups[who]) for who in order]
+    total_tenths = int(round(total_hours_month * 10))
+    shares_tenths = _apportion_tenths(weights, total_tenths)
+    hours_list = [_round(t / 10.0, 1) for t in shares_tenths]
+
+    # Exact integer tenths that sum to `total_tenths` still don't always
+    # sum back to `total_hours_month` bit for bit once each is divided by
+    # ten and rounded to a display float -- floating addition isn't
+    # exactly invertible. So the smallest share moves last and is
+    # recomputed as the exact remainder of every other role's own rounded
+    # figure: summing this list in the order it's returned then
+    # reproduces `total_hours_month` exactly, because Sterbenz's lemma
+    # guarantees a floating subtraction is exact whenever the two sides
+    # are within 2x of each other, which the smallest of two or more
+    # non-negative shares against their own total always is.
+    if len(hours_list) >= 2:
+        smallest = min(range(len(hours_list)), key=lambda i: shares_tenths[i])
+        rest = [i for i in range(len(hours_list)) if i != smallest]
+        order = [order[i] for i in rest] + [order[smallest]]
+        shares_tenths = [shares_tenths[i] for i in rest] + [shares_tenths[smallest]]
+        others_total = sum(hours_list[i] for i in rest)
+        hours_list = [hours_list[i] for i in rest] + [total_hours_month - others_total]
+    elif len(hours_list) == 1:
+        hours_list = [total_hours_month]
+
     out = []
-    for who in order:
+    for who, share_tenths, hours in zip(order, shares_tenths, hours_list):
         role_rows = groups[who]
-        label = who or "not said"
-        hours = _round(sum(r["hours_month"] for r in role_rows), 1)
-        share = int(round(hours / total_hours * 100)) if total_hours > 0 else 0
+        is_bucket = not who
+        if is_bucket:
+            label = _NOT_SAID_LABEL
+        elif who == _NOT_SAID_LABEL:
+            # A role that happens to be named exactly the bucket's own
+            # label. Quoted, so the two rows can never read as the same
+            # string and a dict keyed by `who` never loses one of them.
+            label = '"%s"' % who
+        else:
+            label = who
+        share = int(round(hours / total_hours_month * 100)) if total_hours_month > 0 else 0
 
         scored = [r for r in role_rows if r["patterns"]]
         claim_low = sum(r["claim_low_min"] for r in scored)
@@ -583,6 +663,7 @@ def _role_rollup(rows, role_rates, hourly_cost):
 
         entry = {
             "who": label,
+            "not_said": is_bucket,
             "hours_month": hours,
             "share": share,
             "has_own_rate": has_own_rate,
@@ -635,6 +716,7 @@ def analyze(doc):
     rows = [_step_analysis(s, rate) for s in m["steps"]]
 
     total_hours = sum(r["hours_month"] for r in rows)
+    total_hours_month = _round(total_hours, 1)
 
     scored = [r for r in rows if r["patterns"]]
     scored.sort(key=lambda r: (-r["priority"], -r["saved_high"], r["name"]))
@@ -715,10 +797,10 @@ def analyze(doc):
 
     return {
         "steps": rows,
-        "by_role": _role_rollup(rows, m["role_rates"], rate),
+        "by_role": _role_rollup(rows, m["role_rates"], rate, total_hours_month),
         "totals": {
             "steps": len(rows),
-            "hours_month": _round(total_hours, 1),
+            "hours_month": total_hours_month,
             "saved_low": low,
             "saved_high": high,
             "pending": totals_pending,

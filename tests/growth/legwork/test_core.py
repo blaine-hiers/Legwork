@@ -744,6 +744,32 @@ class ByRole(unittest.TestCase):
         self.assertIn("not said", by_who)
         self.assertGreater(by_who["not said"]["hours_month"], 0)
 
+    def test_a_literal_role_named_not_said_cannot_collide_with_the_bucket(self):
+        """The exact repro: a step with a blank `who` (the bucket) and a
+        step whose `who` is the literal string "not said" (a real role
+        that happens to share the bucket's own label). The two must never
+        render identically -- a dict keyed by `who`, the way every
+        consumer of `by_role` reads it (including the tests above), must
+        end up with both rows, not one silently overwriting the other."""
+        doc = self._doc([
+            ("   ", 30, 10, ["retyped"]),
+            ("not said", 20, 10, ["chased"]),
+        ])
+        a = core.analyze(doc)
+        self.assertEqual(len(a["by_role"]), 2)
+        by_who = {r["who"]: r for r in a["by_role"]}
+        self.assertEqual(len(by_who), 2,
+                         "two distinct by_role rows collapsed to one key: %r"
+                         % [r["who"] for r in a["by_role"]])
+
+        bucket = next(r for r in a["by_role"] if r["not_said"])
+        named = next(r for r in a["by_role"] if not r["not_said"])
+        self.assertNotEqual(bucket["who"], named["who"])
+        self.assertAlmostEqual(bucket["hours_month"], 5.0, places=1)     # 30 min x 10/mo
+        self.assertAlmostEqual(named["hours_month"], 3.3, places=1)      # 20 min x 10/mo
+        self.assertEqual(bucket["hours_month"] + named["hours_month"],
+                         a["totals"]["hours_month"])
+
     def test_a_zero_effective_rate_gives_an_hours_only_line(self):
         doc = self._doc([("Front office", 30, 10, ["retyped"])])   # no rate anywhere
         a = core.analyze(doc)
@@ -760,9 +786,13 @@ class ByRole(unittest.TestCase):
         self.assertIsNone(row["money_how"])
 
     def test_per_role_hours_sum_to_the_sheet_total_across_a_sweep(self):
-        """The reconciliation invariant, swept across tiny inputs where a
-        naive re-rounding could drift, and proving no per-role line ever
-        collapses a range, raises, or shows malformed currency."""
+        """The reconciliation invariant, swept across tiny inputs where the
+        old approach (each role's already-rounded hours summed, then that
+        sum rounded again) could drift from `totals.hours_month`, which
+        rounds the grand sum once. `_apportion_tenths` fixes the total
+        first and hands out its tenths, so this now holds with `==`, not
+        `assertAlmostEqual` -- also proving no per-role line ever collapses
+        a range, raises, or shows malformed currency."""
         currency = MoneyCurrencyFormat()
         for minutes in (0.01, 0.05, 0.5, 1, 2, 3, 5):
             for runs in (0.01, 0.1, 1, 5, 20):
@@ -775,8 +805,7 @@ class ByRole(unittest.TestCase):
                     case = "minutes=%s runs=%s rate=%s" % (minutes, runs, rate)
                     a = core.analyze(doc)
                     total = sum(r["hours_month"] for r in a["by_role"])
-                    self.assertAlmostEqual(
-                        total, a["totals"]["hours_month"], places=6, msg=case)
+                    self.assertEqual(total, a["totals"]["hours_month"], case)
                     for r in a["by_role"]:
                         how = r.get("money_how")
                         if not how:
@@ -784,6 +813,26 @@ class ByRole(unittest.TestCase):
                         currency._every_currency_token_is_well_formed(how, case)
                         for lo, hi in rendered_ranges(how):
                             self.assertNotEqual(lo, hi, "%s: %s" % (case, how))
+
+    def test_per_role_hours_sum_exactly_at_extreme_magnitudes_and_max_steps(self):
+        """The reviewer's own repro: a 34-step sheet at roughly a million
+        minutes/runs found a 3.8e-6 drift under the old approach. Swept
+        here up to `_num`'s own field ceiling (1e9) and at `MAX_STEPS`
+        steps, where the old per-role-then-re-round approach had the most
+        room to disagree with `totals.hours_month`."""
+        roles = ["Front office", "Technician", "Dispatcher", ""]
+        for minutes, runs in ((1_000, 1_000), (1_000_000, 1_000_000),
+                              (1e9, 1e9)):
+            steps = [
+                (roles[i % len(roles)], minutes + i, runs + i, ["chased"])
+                for i in range(core.MAX_STEPS)
+            ]
+            doc = self._doc(steps, hourly_cost=37)
+            case = "minutes=%s runs=%s" % (minutes, runs)
+            a = core.analyze(doc)
+            self.assertEqual(len(a["steps"]), core.MAX_STEPS, case)
+            total = sum(r["hours_month"] for r in a["by_role"])
+            self.assertEqual(total, a["totals"]["hours_month"], case)
 
 
 if __name__ == "__main__":
