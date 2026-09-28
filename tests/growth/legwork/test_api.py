@@ -392,6 +392,200 @@ class TheSaveLoop(unittest.TestCase):
         self.assertEqual(sheet["id"], reply["sheet"]["id"])
         self.assertEqual(sheet.get("starter"), "distributor-quote")
 
+    def test_open_flushes_the_pending_save_before_swapping_the_sheet(self):
+        """#13: `save.now()` must run, and run before `S.sheet` is replaced,
+        or the debounced write lands on the wrong sheet once it fires."""
+        body = self.body_of("open")
+        self.assertIn("save.now()", body)
+        self.assertLess(body.index("save.now()"), body.index("S.sheet = r.sheet"),
+                        "save.now() must flush before the sheet is replaced")
+
+    def test_an_edit_just_before_switching_sheets_is_not_lost(self):
+        """The debounce timer fires after the switch; `open()`'s save.now()
+        is what's supposed to have already flushed it by then."""
+        _, a = call("POST", "/api/sheets", {"starter": "hvac-service-call"})
+        sheet_a = a["sheet"]
+        sheet_a["client"] = "Edited just before switching"   # oninput
+        # open(otherId): save.now() flushing the sheet that's still open ...
+        _, saved = call("PUT", "/api/sheets/" + sheet_a["id"], sheet_a)
+        for key, value in saved["sheet"].items():             # adoptSaved
+            if key not in self.TYPED:
+                sheet_a[key] = value
+        # ... then the switch itself completes.
+        _, b = call("POST", "/api/sheets", {"starter": "distributor-quote"})
+
+        _, back = call("GET", "/api/sheets/" + sheet_a["id"])
+        self.assertEqual(back["sheet"]["client"], "Edited just before switching")
+        self.assertNotEqual(b["sheet"]["id"], sheet_a["id"])
+
+
+class RecomputeGuard(unittest.TestCase):
+    """#14: a stale `/api/analyze` reply must not repaint the totals panel
+    after switching sheets. `/api/analyze` echoes back no sheet id to check
+    the way a save reply does, so `recompute` has to stamp the id itself at
+    issue time and check it at reply time — the same rule as `adoptSaved`,
+    just carried by a closure variable instead of the response body. No JS
+    runtime here to actually race the two requests, so the guard is checked
+    structurally, the way `TheSaveLoop` checks `open`'s save.now() above.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+
+    def body_of_recompute(self):
+        start = self.JS.index("var recompute = UI.debounce(function () {")
+        end = self.JS.index("}, 220);", start)
+        return self.JS[start:end]
+
+    def test_the_sheet_id_is_stamped_before_the_request_and_checked_before_painting(self):
+        body = self.body_of_recompute()
+        self.assertIn("var issuedFor = S.sheet.id;", body)
+        self.assertIn("paintAnalysis(", body)
+        stamp = body.index("var issuedFor = S.sheet.id;")
+        request = body.index("api.post(")
+        check = body.index("S.sheet.id === issuedFor")
+        paint = body.index("paintAnalysis(")
+        self.assertLess(stamp, request,
+                        "the id must be captured before the request is sent")
+        self.assertLess(check, paint,
+                        "the id must be checked before the reply is painted")
+
+    def test_the_guard_is_shaped_like_adoptSaved_not_a_second_mechanism(self):
+        body = self.body_of_recompute()
+        self.assertIn("S.sheet.id ===", body)
+        save_body = self.JS[self.JS.index("function adoptSaved("):
+                             self.JS.index("function adoptSaved(") + 400]
+        self.assertIn("S.sheet.id", save_body)
+
+
+class ChaseParsing(unittest.TestCase):
+    """`parseChase` in app.js, checked the same way `TheSaveLoop` checks the
+    save loop: no JS runtime in this suite, so the algorithm is mirrored in
+    Python and driven over the real `/api/demo/chase` endpoint, and the JS
+    source is checked structurally to keep the two in step.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+
+    @staticmethod
+    def parse_chase(text):
+        """Mirrors app.js's parseChase() exactly. Kept in step by the
+        structural test below."""
+        rows = []
+        for line in str(text or "").split("\n"):
+            if not line.strip():
+                continue
+            bits = line.split(",")
+            if len(bits) < 2:
+                rows.append({"who": line.strip(), "what": "", "due": ""})
+                continue
+            rows.append({
+                "who": bits[0].strip(),
+                "what": ",".join(bits[1:-1]).strip(),
+                "due": bits[-1].strip(),
+            })
+        return rows
+
+    def body_of(self, name):
+        start = self.JS.index("function %s(" % name)
+        end = self.JS.index("\n  }\n", start)
+        return self.JS[start:end]
+
+    def test_the_page_and_this_test_agree_on_when_a_line_is_dropped(self):
+        body = self.body_of("parseChase")
+        self.assertIn("if (!line.trim()) return null", body)
+        self.assertNotIn("bits.length < 2 || !line.trim()", body,
+                         "a no-comma line is being dropped again")
+
+    def test_a_no_comma_line_is_listed_not_dropped(self):
+        rows = self.parse_chase(
+            "Marcus Feld,quote 4471,2026-07-20\njust some garbled paste\n")
+        self.assertEqual(len(rows), 2)
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        self.assertEqual(code, 200)
+        result = r["result"]
+        self.assertEqual(len(result["unreadable"]), 1)
+        self.assertEqual(result["unreadable"][0]["who"], "just some garbled paste")
+
+    def test_a_no_comma_line_gets_an_honest_reason_not_a_date_complaint(self):
+        """It has no date at all to complain about — the real problem is
+        that there was nothing to split a name and a date out of."""
+        rows = self.parse_chase("just some garbled paste\n")
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        why = r["result"]["unreadable"][0]["why"]
+        self.assertIn("comma", why)
+        self.assertNotIn("2026-08-14", why)     # the date-format complaint
+
+    def test_an_empty_date_field_says_no_date_was_given(self):
+        """A comma-separated row whose date column is empty has a comma, so the
+        reason must not claim one is missing; it says no date was given."""
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": [{"who": "Dana", "what": "the PO", "due": ""}],
+                        "today": "2026-08-02"})
+        why = r["result"]["unreadable"][0]["why"]
+        self.assertTrue(why.startswith("No date given."))
+        self.assertNotIn("2026-08-14", why)
+
+    def test_a_blank_line_is_ignored_silently(self):
+        rows = self.parse_chase("Marcus Feld,quote 4471,2026-07-20\n\n\n")
+        self.assertEqual(len(rows), 1)
+
+    def test_the_shown_count_reflects_everything_pasted_not_just_what_parsed(self):
+        """The specific harm the issue names: '2 things checked' when 3 lines
+        were pasted reads as confirmation that all the input was seen."""
+        pasted = ("Marcus Feld,quote 4471,2026-07-20\n"
+                   "Dana,the PO,2026-08-02\n"
+                   "no comma here\n"
+                   "\n")
+        rows = self.parse_chase(pasted)
+        self.assertEqual(len(rows), 3)     # only the blank line is dropped
+        code, r = call("POST", "/api/demo/chase",
+                       {"rows": rows, "today": "2026-08-02"})
+        result = r["result"]
+        self.assertEqual(len(result["rows"]) + len(result["unreadable"]), 3)
+        self.assertIn("3 things checked", result["how"])
+
+
+class PromiseChains(unittest.TestCase):
+    """Every `UI.guard(...)` chain in app.js must end in its own `.catch()`
+    — and that catch must swallow only the rejection `guard()` itself
+    already toasted, not a genuine bug thrown further down the same
+    `.then()` chain. `guard()` marks the error it toasts and rethrows (see
+    `_shared/ui.js`); each terminal catch here checks that mark before
+    deciding to swallow. Real end-to-end proof that a real bug still
+    surfaces, and a toasted one does not, lives in test_browser.py's
+    `GuardedErrorsStaySilentRealBugsSurface` (skipped there when Playwright
+    isn't installed) — this class checks the shape structurally, which
+    holds regardless.
+    """
+
+    JS = (_APP / "static" / "app.js").read_text(encoding="utf-8")
+    UI_JS = (_ROOT / "_shared" / "static" / "ui.js").read_text(encoding="utf-8")
+
+    def test_guard_marks_the_error_it_toasts_before_rethrowing(self):
+        start = self.UI_JS.index("function guard(")
+        end = self.UI_JS.index("\n  }\n", start)
+        body = self.UI_JS[start:end]
+        self.assertIn("uiGuardToasted = true", body)
+        self.assertLess(body.index("uiGuardToasted = true"), body.index("throw err"),
+                        "the mark must be set before the rethrow")
+
+    def test_every_guard_chain_swallows_only_the_marked_error(self):
+        guards = self.JS.count("UI.guard(")
+        self.assertGreater(guards, 0, "UI.guard( no longer appears in app.js")
+        rethrows_unmarked = self.JS.count("if (!e || !e.uiGuardToasted) throw e;")
+        self.assertEqual(rethrows_unmarked, guards,
+                         "a UI.guard(...) chain's terminal .catch() must "
+                         "rethrow anything guard() didn't itself toast")
+
+    def test_importing_a_wrong_shaped_file_is_still_a_clean_400(self):
+        """The user-facing side of #6: unchanged. `guard()` still gets a
+        rejection to toast; only the unhandled-rejection noise is new here."""
+        code, r = call("POST", "/api/import/flowmap", {"handoff": {"format": "x"}})
+        self.assertEqual(code, 400)
+        self.assertIn("error", r)
+
 
 class TheShell(unittest.TestCase):
     """The half of the rule that breaks quietly — see `system/apps/CLAUDE.md`."""

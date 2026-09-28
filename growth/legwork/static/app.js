@@ -70,8 +70,15 @@
      visible stutter in the one moment the app exists for. */
   var recompute = UI.debounce(function () {
     if (!S.sheet) return;
+    // Stamp the sheet id this request was issued for. /api/analyze echoes
+    // back no id of its own to check against, unlike the save reply
+    // adoptSaved guards above — so the id has to be captured here, at issue
+    // time, and compared against whatever is open when the reply lands.
+    var issuedFor = S.sheet.id;
     api.post("/api/analyze", S.sheet)
-      .then(function (r) { paintAnalysis(r.analysis); })
+      .then(function (r) {
+        if (S.sheet && S.sheet.id === issuedFor) paintAnalysis(r.analysis);
+      })
       .catch(function () { /* the sheet is still on screen; a failed sum is not fatal */ });
   }, 220);
 
@@ -109,7 +116,13 @@
         .then(function () {
           if (S.sheet && S.sheet.id === s.id) { S.sheet = null; S.analysis = null; paintSheet(); }
           return refreshSheets();
-        });
+        })
+        .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
     });
   }
 
@@ -122,6 +135,12 @@
   // ---------------------------------------------------------- open / new
 
   function open(id) {
+    // Flush whatever the debounce is still holding for the sheet that is
+    // open right now, before it gets replaced below. Safe to do only because
+    // adoptSaved (above) drops a reply whose id no longer matches S.sheet by
+    // the time it lands — otherwise this flush's own late reply could win a
+    // race against the sheet being opened here.
+    save.now();
     return UI.guard(api.get("/api/sheets/" + encodeURIComponent(id)), "Open")
       .then(function (r) {
         S.sheet = r.sheet;
@@ -143,6 +162,12 @@
         } else {
           paintAsk("");
         }
+      })
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
       });
   }
 
@@ -186,6 +211,12 @@
     UI.guard(api.post("/api/sheets", starter ? { starter: starter } : {}), "New sheet")
       .then(function (r) {
         return refreshSheets().then(function () { return open(r.sheet.id); });
+      })
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
       });
   }
 
@@ -460,8 +491,14 @@
 
   function parseChase(text) {
     return String(text || "").split("\n").map(function (line) {
+      if (!line.trim()) return null;   // a blank line, not a finding
       var bits = line.split(",");
-      if (bits.length < 2 || !line.trim()) return null;
+      if (bits.length < 2) {
+        // No comma to split on. Sent through anyway, with no due date, so
+        // the backend lists it under "Dates it could not read" instead of
+        // it vanishing before the count is even taken.
+        return { who: line.trim(), what: "", due: "" };
+      }
       return {
         who: (bits[0] || "").trim(),
         what: (bits.slice(1, bits.length - 1).join(",") || "").trim(),
@@ -478,7 +515,13 @@
     if (key === "document") payload.template = $("#docPick").value;
 
     UI.guard(api.post("/api/demo/" + encodeURIComponent(key), payload), "Demo")
-      .then(function (r) { paintDemo(key, r.result); });
+      .then(function (r) { paintDemo(key, r.result); })
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   function paintDemo(key, res) {
@@ -568,7 +611,13 @@
   function download() {
     if (!S.sheet) return;
     UI.guard(api.post("/api/export/markdown", S.sheet), "Download")
-      .then(function (r) { UI.download(r.filename, r.text, r.mime); });
+      .then(function (r) { UI.download(r.filename, r.text, r.mime); })
+      .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
   }
 
   // -------------------------------------------------------------- import
@@ -590,7 +639,13 @@
           .then(function () {
             UI.toast.warn("Times and names came across. What happens to the " +
               "information did not — a map never recorded it, so tick it as they talk.", 9000);
-          });
+          })
+          .catch(function (e) {
+        // Only swallow the rejection guard() already toasted. Anything else
+        // is a real bug in the .then() chain above and must keep surfacing
+        // as an unhandled rejection, the way it would with no catch at all.
+        if (!e || !e.uiGuardToasted) throw e;
+      });
       };
       reader.readAsText(file);
     });

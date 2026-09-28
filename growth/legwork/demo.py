@@ -61,13 +61,39 @@ def _first(text, patterns, flags=0):
     earlier version read *this is Dana at Northside* and put **Dana at** on the
     screen as the customer's name.
     """
-    for label, rx in patterns:
-        m = re.search(rx, text, flags)
-        if m:
+    for entry in patterns:
+        label, rx = entry[0], entry[1]
+        validate = entry[2] if len(entry) > 2 else None
+        for m in re.finditer(rx, text, flags):
             value = _trim(m.group("v") if "v" in (m.groupdict() or {}) else m.group(0))
-            if value:
-                return value, label
+            if not value:
+                continue
+            if validate and not validate(value):
+                continue
+            return value, label
     return "", ""
+
+
+def _valid_slashed_date(value):
+    """Reject a slashed date whose numbers cannot be a month and a day in
+    either order. `12/45` has no reading where 45 is a day (max 31) or a
+    month (max 12) — that is malformed, not merely ambiguous, and the demo's
+    contract is to catch malformed values. `03/04` is left alone: both
+    readings are in range, and which one is meant is not this function's
+    business to decide.
+    """
+    bits = value.split("/")
+    if len(bits) < 2:
+        return True
+    a, b = int(bits[0]), int(bits[1])
+
+    def month_ok(n):
+        return 1 <= n <= 12
+
+    def day_ok(n):
+        return 1 <= n <= 31
+
+    return (month_ok(a) and day_ok(b)) or (day_ok(a) and month_ok(b))
 
 
 # ------------------------------------------------------------------- fields
@@ -136,7 +162,8 @@ FIELDS = [
         "patterns": [
             ("a written date",
              r"(?P<v>(?i:%s)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)" % _MONTHS),
-            ("a slashed date", r"(?P<v>\d{1,2}/\d{1,2}(?:/\d{2,4})?)"),
+            ("a slashed date", r"(?P<v>\d{1,2}/\d{1,2}(?:/\d{2,4})?)",
+             _valid_slashed_date),
             # A wanted-day beats a mentioned-day. "We have patients Monday so we
             # need somebody out Friday" holds two weekdays and only one of them
             # is the answer; asking for the verb first is what separates them.
@@ -328,8 +355,9 @@ def chase(rows, today=None):
         try:
             due = datetime.strptime(due_raw[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
-            unreadable.append({"who": who, "what": what, "due": due_raw,
-                               "why": "I can't read that date. It needs to look like 2026-08-14."})
+            why = ("No date given. It needs a name and a date, separated by a comma." if not due_raw
+                   else "I can't read that date. It needs to look like 2026-08-14.")
+            unreadable.append({"who": who, "what": what, "due": due_raw, "why": why})
             continue
         days = (today - due).days
         out.append({
@@ -344,8 +372,11 @@ def chase(rows, today=None):
         "rows": out,
         "unreadable": unreadable,
         "late_count": len(late),
+        # The leading count is everything pasted, not just what parsed — a
+        # line that could not be read is still a thing that was checked, and
+        # saying otherwise reads as confirmation that all the input was seen.
         "how": ("%d things checked against %s. %d late, %d due today, %d not yet"
-                % (len(out), today.isoformat(), len(late),
+                % (len(out) + len(unreadable), today.isoformat(), len(late),
                    sum(1 for r in out if r["days_late"] == 0),
                    sum(1 for r in out if r["days_late"] < 0))
                 + (", %d with a date I couldn't read" % len(unreadable) if unreadable else "")
