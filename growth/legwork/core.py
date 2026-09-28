@@ -88,6 +88,7 @@ def blank_demo(name="Untitled"):
         "industry": "",
         "steps": [],
         "hourly_cost": 0.0,     # 0 means "nobody said", and the sheet stays in hours
+        "role_rates": {},       # per-role rate overrides; absent role -> hourly_cost
         "notes": "",
     }
 
@@ -130,6 +131,13 @@ def normalize(doc):
         if len(steps) >= MAX_STEPS:
             break
 
+    raw_role_rates = doc.get("role_rates")
+    role_rates = {}
+    for key, value in (raw_role_rates.items() if isinstance(raw_role_rates, dict) else ()):
+        key = _text(key)
+        if key:
+            role_rates[key] = _num(value)
+
     out = {
         "id": _text(doc.get("id")) or None,
         "name": _text(doc.get("name")) or "Untitled",
@@ -137,6 +145,7 @@ def normalize(doc):
         "industry": _text(doc.get("industry")),
         "notes": _text(doc.get("notes")),
         "hourly_cost": _num(doc.get("hourly_cost")),
+        "role_rates": role_rates,
         "steps": steps,
     }
     for key in ("created", "updated", "starter", "from_map"):
@@ -531,6 +540,95 @@ def _step_analysis(step, hourly_cost):
     return out
 
 
+def _role_rollup(rows, role_rates, hourly_cost):
+    """Hand-time rolled up by `who`, grouped from the same per-step `rows`
+    `analyze()` already sums for `totals`.
+
+    Every row lands in exactly one group -- its own `who`, or the "not
+    said" bucket for an empty one -- so summing every group's hours
+    reproduces `totals.hours_month` by construction: the parts are a
+    partition of the same numbers the whole already sums, never a second,
+    separate calculation that could drift from it.
+
+    A role's money never gets a rate this app was not told. `role_rates`
+    holds only the rates an owner actually stated (see `normalize`), so a
+    role missing from it falls back to `hourly_cost` -- the same blended
+    rate every step already used before this rollup existed -- and its
+    line says so, rather than reading as a rate for that role.
+    """
+    groups = {}
+    order = []
+    for r in rows:
+        who = r["who"]
+        if who not in groups:
+            groups[who] = []
+            order.append(who)
+        groups[who].append(r)
+
+    total_hours = sum(r["hours_month"] for r in rows)
+    out = []
+    for who in order:
+        role_rows = groups[who]
+        label = who or "not said"
+        hours = _round(sum(r["hours_month"] for r in role_rows), 1)
+        share = int(round(hours / total_hours * 100)) if total_hours > 0 else 0
+
+        scored = [r for r in role_rows if r["patterns"]]
+        claim_low = sum(r["claim_low_min"] for r in scored)
+        claim_high = sum(r["claim_high_min"] for r in scored)
+
+        own_rate = role_rates.get(who, 0.0) if who else 0.0
+        has_own_rate = own_rate > 0
+        rate = own_rate if has_own_rate else hourly_cost
+
+        entry = {
+            "who": label,
+            "hours_month": hours,
+            "share": share,
+            "has_own_rate": has_own_rate,
+            "money_how": None,
+        }
+
+        nothing_ticked = not scored
+        pending = bool(scored) and claim_high <= 0
+
+        if nothing_ticked:
+            entry["addressable"] = "not claimed — nothing ticked for %s" % label
+        elif pending:
+            entry["addressable"] = "not sized yet — no volume given"
+        else:
+            entry["addressable"] = _finest_range(claim_low, claim_high)
+            if rate <= 0:
+                entry["rate_how"] = (
+                    "No hourly cost stated for %s, and no blended rate on "
+                    "the sheet either -- this stays in hours, the same "
+                    "rule as the sheet-wide rate." % label
+                )
+            else:
+                money_low, money_high = claim_low / 60.0 * rate, claim_high / 60.0 * rate
+                money_low_disp, money_high_disp = _money_range(money_low, money_high)
+                rate_disp = _round(rate, 0)
+                rate_label = (
+                    "%s's own rate" % label if has_own_rate else
+                    "the sheet's blended rate, not a rate for %s" % label
+                )
+                if entry["addressable"].endswith("hrs"):
+                    entry["money_how"] = (
+                        "%s × $%s an hour (%s) = %s–%s a month"
+                        % (entry["addressable"], rate_disp, rate_label,
+                           money_low_disp, money_high_disp)
+                    )
+                else:
+                    hrs_low, hrs_high = _hours_span(claim_low / 60.0, claim_high / 60.0)
+                    entry["money_how"] = (
+                        "%s a month (%s–%s hrs) × $%s an hour (%s) ≈ %s–%s a month"
+                        % (entry["addressable"], hrs_low, hrs_high, rate_disp,
+                           rate_label, money_low_disp, money_high_disp)
+                    )
+        out.append(entry)
+    return out
+
+
 def analyze(doc):
     m = normalize(doc)
     rate = m["hourly_cost"]
@@ -617,6 +715,7 @@ def analyze(doc):
 
     return {
         "steps": rows,
+        "by_role": _role_rollup(rows, m["role_rates"], rate),
         "totals": {
             "steps": len(rows),
             "hours_month": _round(total_hours, 1),
@@ -747,6 +846,21 @@ def to_markdown(doc, analysis=None):
         ))
     out.append("")
 
+    if a["by_role"]:
+        out.append("## By who does it")
+        out.append("")
+        out.append("| Who | Hours/mo | Share | In money |")
+        out.append("|---|---|---|---|")
+        for role in a["by_role"]:
+            money_cell = role["money_how"] or role.get("rate_how") or role["addressable"]
+            out.append("| %s | %s | %d%% | %s |" % (
+                role["who"].replace("|", "/"),
+                role["hours_month"],
+                role["share"],
+                money_cell.replace("|", "/"),
+            ))
+        out.append("")
+
     if a["warnings"]:
         out.append("## What this sheet does not cover")
         out.append("")
@@ -793,6 +907,14 @@ def to_text(doc, analysis=None):
         for p in f["patterns"]:
             lines.append("  - %s: %s" % (p["title"], p["becomes"]))
             lines.append("    %s" % p["how"])
+        lines.append("")
+    if a["by_role"]:
+        lines.append("BY WHO DOES IT:")
+        for role in a["by_role"]:
+            lines.append("  %s: %s hrs/mo (%d%%)"
+                         % (role["who"], role["hours_month"], role["share"]))
+            note = role["money_how"] or role.get("rate_how") or role["addressable"]
+            lines.append("    %s" % note)
         lines.append("")
     for w in a["warnings"]:
         lines.append("* %s" % w)
