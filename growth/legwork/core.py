@@ -23,6 +23,8 @@ the one-pager says so out loud.
 
 from __future__ import annotations
 
+import math
+
 import patterns
 
 __all__ = ["blank_demo", "normalize", "analyze", "to_markdown", "to_text",
@@ -174,6 +176,181 @@ def _compose(fractions):
     return 1.0 - remaining
 
 
+def _percent_span(low_frac, high_frac):
+    """The low and high fractions, as the whole-number percents an owner
+    reads -- rounded so a real range cannot come out looking like a point.
+
+    `round()` is exactly what let a genuine range print as "0% to 0%": two
+    fractions a few thousandths apart can both round to the same nearest
+    integer. Floor the low end and ceil the high end instead. That pair
+    can only land on the same integer if `low_frac >= high_frac` to start
+    with -- floor(low) < ceil(high) whenever low < high, full stop, no case
+    where the two fractions are far enough apart to be shown separately can
+    still round its way back down to one number.
+    """
+    return int(math.floor(low_frac * 100)), int(math.ceil(high_frac * 100))
+
+
+def _finest_range(low_min, high_min):
+    """A positive, genuinely distinct low/high (in minutes) rendered at the
+    coarsest unit that still keeps the two ends apart.
+
+    This is the other half of the fix for issue #1. `_hours()` rounds to a
+    tenth of an hour -- six minutes -- which is fine once a step has enough
+    time on it to survive that rounding. A step worth two minutes a month
+    does not: both ends round to 0.0 and a real range prints as the single
+    figure `05` §8 forbids, even though the fractions behind it were never
+    equal.
+
+    Hours first, since that is the unit an owner actually thinks in. Then
+    minutes -- sixty times the resolution, for the same two numbers. Then
+    seconds, twice over: whole seconds, then a tenth of one. That covers
+    every quantity an owner can actually type into this app's own minutes
+    field (half a minute, run every other month, is a real answer -- see
+    the review that added this tier) with room to spare. The raise below
+    is a model-broke assertion, not a rendering choice: it must never be
+    reachable from an ordinary form, only from a fraction pair that is
+    equal, or close enough to it, that no unit tells them apart -- exactly
+    what a mangled `_compose` or a hand-edited pattern would produce, and
+    exactly what `test_the_display_guard_fires...` forces to prove it.
+    """
+    low_hrs, high_hrs = _hours(low_min), _hours(high_min)
+    if high_hrs > low_hrs:
+        return "%s–%s hrs" % (low_hrs, high_hrs)
+    low_m, high_m = _round(low_min, 1), _round(high_min, 1)
+    if high_m > low_m:
+        return "%s–%s min" % (low_m, high_m)
+    low_s, high_s = _round(low_min * 60, 0), _round(high_min * 60, 0)
+    if high_s > low_s:
+        return "%s–%s sec" % (low_s, high_s)
+    low_s1, high_s1 = _round(low_min * 60, 1), _round(high_min * 60, 1)
+    if high_s1 > low_s1:
+        return "%s–%s sec" % (low_s1, high_s1)
+    # Still one figure at a tenth of a second, yet a real range -- reachable
+    # from the form (0.01 min, run 0.5 times a month). Floor the low end and
+    # ceil the high end, the `_percent_span` trick, which can't collapse a
+    # real range, rather than raise into a 500. Only a pair that isn't a
+    # range at all -- the model-broke case -- still raises.
+    if high_min > low_min:
+        lo = math.floor(round(low_min * 600, 6)) / 10.0
+        hi = math.ceil(round(high_min * 600, 6)) / 10.0
+        return "%s–%s sec" % (_round(lo, 1), _round(hi, 1))
+    raise patterns.SavingsError(
+        "a real, non-zero range (%.6f-%.6f minutes) still reads as a single "
+        "figure at a tenth of a second. A saving on a client's page is a "
+        "range or it is nothing." % (low_min, high_min)
+    )
+
+
+def _finest_hours(low_min, high_min):
+    """`low_min`/`high_min` as hours, at the fewest decimal places that
+    still keep them apart -- the numeric twin of `_finest_range`.
+
+    A review of the first fix found `analyze()`'s totals summing each
+    step's already-rounded `saved_low`/`saved_high` and rounding the sum
+    again -- double rounding, on top of the single rounding `_hours()`
+    already forces. Summing the raw claim once and rounding it once (below,
+    in `analyze()`) closes that; this closes the rest, because a total can
+    still be genuinely small enough that a tenth of an hour can't hold two
+    real, distinct numbers apart, the same way a single tiny step can't.
+    These two are read by API clients as hours, and fed into a money
+    calculation elsewhere, so unlike `_finest_range` they stay in one unit
+    -- more decimal places, never a different one. When there is truly
+    nothing to claim (`low_min == high_min == 0`, the "nothing ticked" and
+    "no volume yet" states in `analyze()`) this just returns two equal
+    zeros, which is the honest answer there; whenever the two inputs are
+    genuinely distinct, some decimal count that shows it is guaranteed to
+    exist, and the cap below is only so a search for it can't run forever.
+    """
+    low_hrs, high_hrs = low_min / 60.0, high_min / 60.0
+    for places in (1, 2, 3, 4, 5, 6):
+        lo, hi = _round(low_hrs, places), _round(high_hrs, places)
+        if hi > lo:
+            return lo, hi
+    return _round(low_hrs, 6), _round(high_hrs, 6)
+
+
+def _finest_money(low_min, high_min, hourly_cost):
+    """`low_min`/`high_min` (raw, unrounded minutes) turned into dollars.
+
+    The review that found the original bug traced it exactly: `money_low`/
+    `money_high` were built from `saved_low`/`saved_high`, the tenth-of-an-
+    hour-rounded display figures, so a step small enough to round both ends
+    to the same tenth of an hour rounded both ends of its money to the same
+    whole dollar too -- issue #1's collapse again, wearing a dollar sign.
+    The fix is the same shape as `_finest_hours`: start from the raw claim
+    in dollars, unrounded, rather than a figure that already lost the
+    difference. `low_min < high_min` is guaranteed by the time this is
+    called (see `_step_analysis`), so these two floats are always distinct
+    -- an API/JSON consumer reading `money_low`/`money_high` numerically
+    never sees a false collapse. `_money_range` below is what turns this
+    pair into the two currency *strings* a client reads; the escalating
+    ladder of decimal places a first attempt at this used has moved there,
+    because whole dollars and a fraction of a cent are display concerns,
+    not the value itself.
+    """
+    return low_min / 60.0 * hourly_cost, high_min / 60.0 * hourly_cost
+
+
+def _hours_span(low_hrs, high_hrs, places=4):
+    """The hours in `money_how`'s parenthetical, as two strings. Floor the
+    low end and ceil the high end at `places` decimals, the same trick
+    `_money_range` and `_percent_span` use, so two different claims can't
+    both round to one figure ("0.0001–0.0001 hrs"). The product is
+    rounded first so float noise like 60.00000000000001 doesn't ceil a
+    clean 0.006 up to 0.0061.
+    """
+    f = 10 ** places
+    lo = math.floor(round(low_hrs * f, 6)) / f
+    hi = math.ceil(round(high_hrs * f, 6)) / f
+    text = lambda v: ("%.*f" % (places, v)).rstrip("0").rstrip(".") or "0"
+    return text(lo), text(hi)
+
+
+def _money_text(amount):
+    """One dollar amount as a client reads currency: whole dollars when it
+    is one, otherwise exactly two decimal places -- never `$0.3`, never a
+    fraction of a cent. `_money_range` below has already floored/ceilinged
+    `amount` to whichever of those two granularities the pair is being
+    shown at, so this only has to pick the right number of decimals for a
+    number that already lands on one.
+    """
+    if amount <= 0:
+        return "$0"
+    if amount < 0.01:
+        return "under $0.01"
+    if abs(amount - round(amount)) < 1e-9:
+        return "$%d" % round(amount)
+    return "$%.2f" % amount
+
+
+def _money_range(low_amt, high_amt):
+    """`low_amt`/`high_amt` (raw, unrounded dollars, `low_amt <= high_amt`)
+    as the two strings a client reads for that range.
+
+    The bug this closes: rounding each end independently (to a whole
+    dollar, or to cents) can land two genuinely different amounts on the
+    same displayed figure -- $0.026 and $0.034 both round to $0.03. Floor
+    the low end and ceil the high end instead, at whichever granularity
+    (whole dollars, or cents) the pair is being shown at, the same
+    floor/ceil trick `_percent_span` already uses for percentages: that
+    pair can only land on the same number if `low_amt >= high_amt` to
+    start with, so a real difference can never round itself away. Below a
+    cent there is no granularity left to floor and ceil at all -- nothing
+    here costs a fraction of a cent, so that range says so instead of
+    printing two numbers nobody could act on.
+    """
+    if high_amt <= 0:
+        return "$0", "$0"
+    if high_amt < 0.01:
+        return ("$0" if low_amt <= 0 else "under $0.01"), "under $0.01"
+    if high_amt >= 1:
+        lo, hi = math.floor(low_amt), math.ceil(high_amt)
+    else:
+        lo, hi = math.floor(low_amt * 100) / 100.0, math.ceil(high_amt * 100) / 100.0
+    return _money_text(lo), _money_text(hi)
+
+
 def _step_analysis(step, hourly_cost):
     """One step: what it costs today, and what the patterns would take off it."""
     per_run = step["minutes"]
@@ -219,9 +396,37 @@ def _step_analysis(step, hourly_cost):
             "page is a range or it is nothing." % (step.get("name"), low_frac)
         )
 
-    saved_low = _hours(minutes_month * low_frac)
-    saved_high = _hours(minutes_month * high_frac)
+    # What the ticked patterns actually claim off this step, in minutes,
+    # unrounded. `saved_low`/`saved_high` below are these same two numbers
+    # after `_hours()` rounds them to a tenth of an hour for the screen --
+    # kept here, raw, because a step's own totals and the sheet's totals
+    # need to add before they round, not after (see `analyze()`).
+    claim_low_min = minutes_month * low_frac
+    claim_high_min = minutes_month * high_frac
+    saved_low = _hours(claim_low_min)
+    saved_high = _hours(claim_high_min)
     mid = (saved_low + saved_high) / 2.0
+
+    share_low, share_high = _percent_span(low_frac, high_frac)
+
+    # issue #1: the guard above protects the fractions, but a client reads
+    # the hours on the page, one rounding later, and a step with genuinely
+    # distinct fractions can still round both ends to the same tenth of an
+    # hour. `claim_high_min <= 0` is exactly "this step has no volume yet"
+    # (`high_frac` is strictly positive whenever `picked`, so the product can
+    # only be zero if `minutes_month` is) -- and that is a different problem
+    # from a collapsed rounding, with a different, honest answer: say the
+    # volume is missing rather than print the zero it produces either way.
+    quantity_pending = bool(picked) and claim_high_min <= 0
+    if picked and quantity_pending:
+        addressable = "not sized yet — no volume given"
+    elif picked:
+        # A real, non-zero claim. Extend the same range invariant to what a
+        # client actually sees: render at whatever precision keeps the two
+        # ends apart, or refuse to print a single figure at all.
+        addressable = _finest_range(claim_low_min, claim_high_min)
+    else:
+        addressable = "not claimed"
 
     impact = _band(mid) if picked else 0
     # `05`'s own scoring, unchanged: Priority = Impact × 2 − Effort − Risk.
@@ -240,15 +445,28 @@ def _step_analysis(step, hourly_cost):
         "patterns": rows,
         "saved_low": saved_low,
         "saved_high": saved_high,
+        # Raw, unrounded minutes behind `saved_low`/`saved_high`, kept so
+        # `analyze()` can add several steps' claims before rounding rather
+        # than after -- see the comment above `claim_low_min`.
+        "claim_low_min": claim_low_min,
+        "claim_high_min": claim_high_min,
         # Kept alongside the hours because hours round: a step worth two minutes
         # a month shows 0.0–0.0 hrs, and the percentages are what stop that
         # reading as a single-point claim on the screen.
-        "share_low": int(round(low_frac * 100)),
-        "share_high": int(round(high_frac * 100)),
+        "share_low": share_low,
+        "share_high": share_high,
+        # True only when patterns are ticked and none of them has anything to
+        # measure yet -- see `quantity_pending` above. `to_markdown`/`to_text`
+        # read this rather than re-deriving it, same as every other `_how`.
+        "quantity_pending": quantity_pending,
+        "addressable": addressable,
         "saved_how": (
-            "%s hrs of hand-time a month, %d%%–%d%% of it addressed = %s–%s hrs"
-            % (_hours(minutes_month), round(low_frac * 100), round(high_frac * 100),
-               saved_low, saved_high)
+            "No volume given yet for this step, so there is nothing to size. "
+            "A zero here is not a finding -- it is a question still open for "
+            "the owner, the same as an hourly cost nobody has stated yet."
+        ) if quantity_pending else (
+            "%s hrs of hand-time a month, %d%%–%d%% of it addressed = %s"
+            % (_hours(minutes_month), share_low, share_high, addressable)
             + (". Two patterns on one step don't add up — the second one only "
                "works on what the first one left, and a tenth of every step is "
                "left with a person on purpose." if len(rows) > 1 else
@@ -264,14 +482,52 @@ def _step_analysis(step, hourly_cost):
         ) if picked else "",
         "note": step["note"],
     }
-    if hourly_cost > 0:
-        out["money_low"] = _round(saved_low * hourly_cost, 0)
-        out["money_high"] = _round(saved_high * hourly_cost, 0)
-        out["money_how"] = (
-            "%s–%s hrs × $%s an hour = $%s–$%s a month"
-            % (saved_low, saved_high, _round(hourly_cost, 0),
-               _round(saved_low * hourly_cost, 0), _round(saved_high * hourly_cost, 0))
-        )
+    if hourly_cost > 0 and not quantity_pending:
+        # Same rule as the money guard the module docstring opens with,
+        # applied to the other missing input: a rate times an hours figure
+        # that doesn't exist yet is still a made-up number, just wearing a
+        # clock face instead of a dollar sign.
+        #
+        # issue #1, money path: built from `claim_low_min`/`claim_high_min`
+        # -- the raw, unrounded claim -- rather than `saved_low`/`saved_high`,
+        # the tenth-of-an-hour display figures those round to. A step small
+        # enough for both hours to round to the same tenth rounded both
+        # dollar figures to the same whole dollar too, which is this issue's
+        # collapse again, wearing a dollar sign. `_finest_money` returns the
+        # raw claim in dollars, unrounded and therefore always distinct
+        # between low and high, for any API/JSON consumer of `money_low`/
+        # `money_high`; `_money_range` turns that pair into the two
+        # currency strings a client reads, floored/ceiled so a real
+        # difference never rounds itself away either.
+        money_low, money_high = _finest_money(claim_low_min, claim_high_min, hourly_cost)
+        out["money_low"] = money_low
+        out["money_high"] = money_high
+        money_low_disp, money_high_disp = _money_range(money_low, money_high)
+        rate_disp = _round(hourly_cost, 0)
+        if addressable.endswith("hrs"):
+            # `addressable` is already in hours here, so multiplying it by
+            # the rate is the equation it looks like -- unchanged from
+            # before this fix, because there is nothing dimensionally wrong
+            # to correct.
+            out["money_how"] = (
+                "%s × $%s an hour = %s–%s a month"
+                % (addressable, rate_disp, money_low_disp, money_high_disp)
+            )
+        else:
+            # `addressable` renders in minutes or seconds here, and an
+            # hourly rate only multiplies against hours -- stating
+            # "0.4 min × $50 an hour" implies an equation that doesn't
+            # compute (0.4 x 50 != the money shown). Show the hours the
+            # rate actually multiplies, alongside the finer-precision time
+            # already on the line above this one, so the sentence is an
+            # equation a business owner could check rather than a false one.
+            hrs_low, hrs_high = _hours_span(claim_low_min / 60.0,
+                                            claim_high_min / 60.0)
+            out["money_how"] = (
+                "%s a month (%s–%s hrs) × $%s an hour ≈ %s–%s a month"
+                % (addressable, hrs_low, hrs_high, rate_disp,
+                   money_low_disp, money_high_disp)
+            )
     return out
 
 
@@ -281,12 +537,53 @@ def analyze(doc):
     rows = [_step_analysis(s, rate) for s in m["steps"]]
 
     total_hours = sum(r["hours_month"] for r in rows)
-    low = _round(sum(r["saved_low"] for r in rows), 1)
-    high = _round(sum(r["saved_high"] for r in rows), 1)
 
     scored = [r for r in rows if r["patterns"]]
     scored.sort(key=lambda r: (-r["priority"], -r["saved_high"], r["name"]))
     first = scored[0] if scored else None
+
+    # Same fix as each step's own figures, aggregated: add the raw, unrounded
+    # claim every ticked step is making, and round the *sum* once, rather
+    # than summing hours each step already rounded and rounding the sum
+    # again. That double rounding is its own way to reintroduce issue #1 --
+    # a review of the first fix found real, distinct per-step fractions
+    # whose already-rounded hours still summed and re-rounded to the same
+    # figure twice over -- so `saved_low`/`saved_high` below come from these
+    # totals directly, the same single-rounding rule every step's own
+    # figure already follows.
+    claim_low_total = sum(r["claim_low_min"] for r in scored)
+    claim_high_total = sum(r["claim_high_min"] for r in scored)
+    minutes_total = sum(s["minutes"] * s["runs_per_month"] for s in m["steps"])
+    # `_finest_hours` rather than a flat `_hours()`: a total can be genuinely
+    # small enough that a tenth of an hour can't hold two real numbers apart
+    # (the same reason a single tiny step needed `_finest_range`), and it
+    # degrades to two equal zeros without complaint when there is truly
+    # nothing to claim -- the "nothing ticked" / "pending" states below.
+    low, high = _finest_hours(claim_low_total, claim_high_total)
+
+    # Three states, not two. `scored` empty means nothing on the sheet has
+    # been ticked at all -- the same honest "nothing is claimed" state
+    # `_step_analysis` already prints per step -- and that is a different
+    # thing from "ticked, but no step has a volume yet" below. A review of
+    # the first fix found the two folded into one `else` that still called
+    # `_range(low, high)` on an all-zero total, which is exactly the "0-0
+    # hrs / 0% to 0%" this issue exists to remove; the fix is to name the
+    # unclaimed state instead of falling through to it.
+    nothing_ticked = not scored
+    totals_pending = bool(scored) and claim_high_total <= 0
+
+    if nothing_ticked:
+        addressable = "not claimed — nothing on this sheet has been ticked yet"
+        t_share_low = t_share_high = 0
+    elif totals_pending:
+        addressable = "not sized yet — none of the ticked steps have a volume given"
+        t_share_low = t_share_high = 0
+    else:
+        addressable = _finest_range(claim_low_total, claim_high_total)
+        t_share_low, t_share_high = (
+            int(math.floor(claim_low_total / minutes_total * 100)),
+            int(math.ceil(claim_high_total / minutes_total * 100)),
+        )
 
     warnings = []
     if not m["steps"]:
@@ -325,13 +622,25 @@ def analyze(doc):
             "hours_month": _round(total_hours, 1),
             "saved_low": low,
             "saved_high": high,
+            "pending": totals_pending,
+            "nothing_ticked": nothing_ticked,
+            "addressable": addressable,
             "how": (
+                "Every step's hand-time added up is %s hrs a month. Nothing on "
+                "the sheet has been ticked yet, so nothing is claimed against it."
+                % _round(total_hours, 1)
+            ) if nothing_ticked else (
+                "Every step's hand-time added up is %s hrs a month. None of the "
+                "ticked steps have a volume yet, so none of it has a size -- "
+                "that is a missing answer, not a zero."
+                % _round(total_hours, 1)
+            ) if totals_pending else (
                 "Every step's hand-time added up is %s hrs a month. The patterns "
-                "ticked address %s–%s hrs of that."
-                % (_round(total_hours, 1), low, high)
+                "ticked address %s of that."
+                % (_round(total_hours, 1), addressable)
             ),
-            "share_low": int(round((low / total_hours) * 100)) if total_hours else 0,
-            "share_high": int(round((high / total_hours) * 100)) if total_hours else 0,
+            "share_low": t_share_low,
+            "share_high": t_share_high,
         },
         "first": first,
         "warnings": warnings,
@@ -362,10 +671,6 @@ _NOT_ALL_OF_IT = (
 )
 
 
-def _range(low, high, unit="hrs"):
-    return "%s–%s %s" % (low, high, unit)
-
-
 def to_markdown(doc, analysis=None):
     m = normalize(doc)
     a = analysis or analyze(m)
@@ -384,9 +689,16 @@ def to_markdown(doc, analysis=None):
         out.append("You described **%d steps** taking **%s hours a month** of "
                    "somebody's hands." % (t["steps"], t["hours_month"]))
         out.append("")
-        out.append("Of that, **%s** looks addressable — %d%% to %d%% of it."
-                   % (_range(t["saved_low"], t["saved_high"]),
-                      t["share_low"], t["share_high"]))
+        if t["nothing_ticked"]:
+            out.append("Nothing on this sheet has been ticked yet, so nothing "
+                       "is claimed against it.")
+        elif t["pending"]:
+            out.append("Of that, nothing can be sized yet — none of the ticked "
+                       "steps have a volume given. A zero here is not a "
+                       "finding; it's the sheet waiting on the owner.")
+        else:
+            out.append("Of that, **%s** looks addressable — %d%% to %d%% of it."
+                       % (t["addressable"], t["share_low"], t["share_high"]))
         out.append("")
         out.append("> %s" % t["how"])
     else:
@@ -400,7 +712,10 @@ def to_markdown(doc, analysis=None):
         out.append("**%s**" % f["name"])
         out.append("")
         out.append("- Takes %s hours a month today (%s)" % (f["hours_month"], f["hours_how"]))
-        out.append("- Addressable: **%s a month**" % _range(f["saved_low"], f["saved_high"]))
+        if f["quantity_pending"]:
+            out.append("- Addressable: **not sized yet** — no volume given for this step")
+        else:
+            out.append("- Addressable: **%s a month**" % f["addressable"])
         out.append("- Why this one first: %s" % f["priority_how"])
         if f.get("money_how"):
             out.append("- In money: %s" % f["money_how"])
@@ -418,11 +733,16 @@ def to_markdown(doc, analysis=None):
     out.append("| Step | Who | Today | Addressable | Why that order |")
     out.append("|---|---|---|---|---|")
     for r in a["steps"]:
+        addressable_cell = (
+            "no volume yet" if r["quantity_pending"] else
+            r["addressable"] if r["patterns"] else
+            "not claimed"
+        )
         out.append("| %s | %s | %s hrs/mo | %s | %s |" % (
             r["name"].replace("|", "/"),
             (r["who"] or "—").replace("|", "/"),
             r["hours_month"],
-            _range(r["saved_low"], r["saved_high"]) if r["patterns"] else "not claimed",
+            addressable_cell,
             r["priority_how"] or "nothing ticked",
         ))
     out.append("")
@@ -453,9 +773,15 @@ def to_text(doc, analysis=None):
     lines = ["%s — what could come off your plate" % (m["client"] or m["name"]), ""]
     lines.append("%d steps, %s hours a month of hand-time."
                  % (t["steps"], t["hours_month"]))
-    lines.append("Addressable: %s a month (%d%%-%d%%)."
-                 % (_range(t["saved_low"], t["saved_high"]),
-                    t["share_low"], t["share_high"]))
+    if t["nothing_ticked"]:
+        lines.append("Addressable: nothing claimed — nothing on this sheet "
+                     "has been ticked yet.")
+    elif t["pending"]:
+        lines.append("Addressable: not sized yet — none of the ticked steps "
+                     "have a volume given.")
+    else:
+        lines.append("Addressable: %s a month (%d%%-%d%%)."
+                     % (t["addressable"], t["share_low"], t["share_high"]))
     lines.append("  %s" % t["how"])
     lines.append("")
     if a["first"]:
